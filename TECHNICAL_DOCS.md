@@ -469,15 +469,26 @@ Vì bạn muốn chạy nhiều tools trên cùng server, phương án dùng Doc
 2. Cả 2 tool sẽ chạy song song, không xung đột thư viện Python, độc lập hoàn toàn bộ nhớ đệm lẫn cấu hình.
 3. Khi bạn bảo trì Tool 1 (Restart/Stop), Tool 2 vẫn hoạt động 100% bình thường.
 
-### 9.4 Cập nhật phiên bản mới (Update code định kỳ)
+### 9.4 Cập nhật phiên bản tự động bằng CI/CD (GitHub Actions)
 
-Việc cập nhật (Update version) bây giờ chỉ tốn khoảng 30 giây:
-1. Bạn sửa đổi code trên máy tính, nén file zip và đẩy đè lên server (như Bước 9.1).
-2. Xóa các file cũ và giải nén file zip đè lên folder code cũ.
-3. Tại chính folder đó trên server, gõ lại đúng 1 lệnh duy nhất:
-```bash
-docker-compose up -d --build
-```
-Hệ thống Docker sẽ tự nhận ra có source code mới, re-build lại container cực kì thông minh và downtime (thời gian website ngừng hoạt động để đổi mới) chỉ mất 1-2 giây.
+Để tự động hoá 100% quá trình cập nhật mà không cần truy cập SSH nén/giải nén thủ công, dự án đã được tích hợp **GitHub Actions** (file `.github/workflows/deploy.yml`).
 
+**Quy trình:**
+1. Mỗi khi có code mới được Push lên nhánh `master` (hoặc `main`) trên GitHub.
+2. GitHub Actions sẽ dùng `scp-action` chép đè code sang máy chủ Google Cloud.
+3. Chạy `ssh-action` gọi lệnh `docker-compose down` và `docker-compose up -d --build`.
+4. Website được tự động nâng cấp version mới mà không cần thao tác tay.
 
+**Yêu cầu cấu hình (Một lần duy nhất trên GitHub Repo > Settings > Secrets):**
+- `SSH_HOST`: Địa chỉ IP của máy chủ Google Cloud
+- `SSH_USERNAME`: Tên user trên máy chủ (vd: `thienquy_work1`)
+- `SSH_PRIVATE_KEY`: Khóa bí mật (Private Key rsa 4096) đã sinh ra trên máy chủ (nhớ add public key vào `~/.ssh/authorized_keys` của server).
+
+### 9.5 Khắc phục sự cố thường gặp (Troubleshooting)
+
+| Dấu hiệu / Lỗi | Nguyên nhân | Cách khắc phục |
+|---|---|---|
+| **`KeyError: 'ContainerConfig'`** khi chạy docker-compose up | Do phiên bản `docker-compose` v1.x quá cũ, bị xung đột metadata khi cố khởi tạo lại vùng chứa (recreate) đè lên vùng chứa cũ. | Thêm lệnh `docker-compose down` để xóa dứt điểm container cũ trước khi chạy lại `docker-compose up -d --build`. |
+| **`ModuleNotFoundError: No module named 'requests'`** hoặc `Invalid requirement: 'r\x00e\x00...'` | Thường xảy ra do sửa file `requirements.txt` bằng lệnh `echo` trên PowerShell (Windows). PowerShell tự động lưu dưới dạng UTF-16LE, đẩy lên Linux bị lỗi ký tự null `\x00`. | Mở file `requirements.txt` bằng code editor (như VSCode/Notepad), đảm bảo định dạng file lưu ở dạng **UTF-8** thuần. |
+| **`Error code: 503 ... High demand`** hoặc đứt gãy kết quả JSON | API của Gemini/OpenAI bị quá tải cục bộ, hoặc bị hết tokens giữa chừng khi trả về kết quả JSON dẫn đến cắt ngang chuỗi. | Code đã được vá: (1) Thêm thuật toán thử lại (Exponential backoff retry) tự động đợi 1s, 2s, 4s... nếu gặp mã 503/429. (2) Regex vá lỗi `ai_extractor.py` tự động cắt bỏ phần string JSON bị đứt đoạn cuối cùng. |
+| Truy cập port 8080 báo `ERR_CONNECTION_REFUSED` | 1. Firewall GCP chặn port.<br>2. Ứng dụng bên trong container bị Crash (chết) ngay sau khi khởi động. | Gõ lệnh `docker logs invoice-extractor` để xem log lỗi Python chi tiết. Nếu do Firewall, vào GCP Network mở cổng TCP 8080. |
