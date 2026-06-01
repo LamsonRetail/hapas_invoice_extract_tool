@@ -183,7 +183,7 @@ class AIExtractor:
             truncated = re.sub(r',?\s*"[^"]*"?\s*:\s*$', '', truncated)
             
             # Try to fix by appending } or ]}
-            for suffix in ["", "}", "]}", "}]}", '"}', '"]}', '"}']']:
+            for suffix in ["", "}", "]}", "}]}", '"}', '"]}', '"}]']:
                 try:
                     return json.loads(truncated + suffix)
                 except json.JSONDecodeError:
