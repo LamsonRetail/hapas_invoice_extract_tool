@@ -9,7 +9,6 @@ env/
 
 # App-specific
 uploads/
-config.json
 
 # OS specific
 .DS_Store

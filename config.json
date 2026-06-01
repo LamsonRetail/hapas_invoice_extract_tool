@@ -1,0 +1,24 @@
+{
+    "openai_api_key": "AQ.Ab8RN6L794mhoiZlVpagffeObWyS-bT23eIHyT_NJwFawYdBaA",
+    "openai_model": "gemini-2.5-flash",
+    "lark_app_id": "cli_a9bd21a744f89ed1",
+    "lark_app_secret": "pEtfcDUY9AVSqiK2DYcqHncnkWYJniCx",
+    "lark_base_url": "https://open.larksuite.com",
+    "lark_app_token": "SbVZbtl3za7KjtsyVWBlm8xCgog",
+    "lark_table_id": "tblChTaysjhA5Rln",
+    "lark_view_id": "vewFjmqpy6",
+    "lark_attachment_field": "Tệp đính kèm",
+    "lark_result_fields": {
+        "co_vat": "AI_Có_VAT",
+        "tien_truoc_thue": "AI_Tiền_Trước_Thuế",
+        "tien_vat": "AI_Tiền_VAT",
+        "trang_thai": "AI_Trạng_Thái",
+        "ngay_hoa_don": "AI_Ngày_HĐ",
+        "so_hoa_don": "AI_Số_HĐ",
+        "ten_nguoi_ban": "AI_Người_Bán",
+        "ten_nguoi_mua": "AI_Người_Mua"
+    },
+    "openai_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "lark_content_field": "Text",
+    "lark_table_url": "https://o4pvcegwn6b.sg.larksuite.com/wiki/VGaBwRDdMi5JdEkQp8rlHxiSgRg?table=tblChTaysjhA5Rln&view=vewFjmqpy6"
+}
