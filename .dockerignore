@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.env
+
+# config.json (đã bỏ qua việc ẩn file này vì deploy thẳng lên GC)
+
+# Bỏ qua các thư mục chứa dữ liệu tạm
+uploads/
+output.txt
+
+# Bỏ qua các file test
+test_*.py
+.pytest_cache/
+
+# Bỏ qua git/log
+.git/
+*.log
+
+# Bỏ qua thư mục IDE
+.vscode/
+.idea/
+.gemini/

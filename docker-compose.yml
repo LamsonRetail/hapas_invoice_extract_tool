@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  invoice-extractor:
+    build: .
+    container_name: invoice-extractor
+    restart: unless-stopped
+    ports:
+      # Ánh xạ port 8080 của server vào 8080 của container
+      # Nếu sau này có tool khác, chỉ cần đổi port trên server, ví dụ: "8081:8080"
+      - "8080:8080"
+    volumes:
+      # Mount file config.json ra ngoài để dễ chỉnh sửa mà không cần build lại image
+      - ./config.json:/app/config.json
+      # Mount thư mục uploads ra ngoài để dữ liệu không bị mất khi xóa container
+      - ./uploads:/app/uploads
