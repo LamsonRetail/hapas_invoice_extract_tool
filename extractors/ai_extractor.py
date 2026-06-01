@@ -3,6 +3,7 @@ AI Extractor Module - Sử dụng GPT-4o để bóc tách dữ liệu hoá đơn
 """
 import json
 import re
+import time
 from typing import Dict, Any, List, Optional
 
 from openai import OpenAI
@@ -84,17 +85,32 @@ class AIExtractor:
             }
             
             # Chỉ bật JSON mode nếu là model OpenAI (như gpt-4o, gpt-4-turbo)
-            # Một số proxy/model khác có thể lỗi nếu truyền response_format
             if "gpt-4" in self.model.lower() or "gpt-3.5" in self.model.lower():
                 api_kwargs["response_format"] = {"type": "json_object"}
 
-            response = self.client.chat.completions.create(**api_kwargs)
+            max_retries = 3
+            last_error = None
 
-            raw_text = response.choices[0].message.content.strip()
-            result = self._parse_response(raw_text)
-            result["_raw_response"] = raw_text
-            result["_filename"] = filename
-            return result
+            for attempt in range(max_retries):
+                try:
+                    response = self.client.chat.completions.create(**api_kwargs)
+                    raw_text = response.choices[0].message.content.strip()
+                    result = self._parse_response(raw_text)
+                    result["_raw_response"] = raw_text
+                    result["_filename"] = filename
+                    return result
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+                    # Tự động thử lại nếu server báo lỗi quá tải (503, 502, 429)
+                    if "503" in error_str or "502" in error_str or "429" in error_str or "rate limit" in error_str or "high demand" in error_str:
+                        time.sleep(2 ** attempt)  # Đợi 1s, 2s, 4s...
+                        continue
+                    else:
+                        break # Dừng nếu là lỗi khác (VD: sai API key)
+
+            # Nếu thử lại nhiều lần vẫn thất bại
+            raise last_error
 
         except Exception as e:
             return {
@@ -178,8 +194,11 @@ class AIExtractor:
             start_idx = cleaned.find("{")
             truncated = cleaned[start_idx:]
             
-            # Remove any trailing commas or incomplete keys/values at the end
+            # Cắt bỏ cặp key-value bị đứt ngang (VD: "noi_dung": "Cước phí...)
+            truncated = re.sub(r',\s*"[^"]*"\s*:\s*"?[^"]*$', '', truncated)
+            # Xóa dấu phẩy thừa ở cuối nếu có
             truncated = re.sub(r',\s*$', '', truncated)
+            # Xóa key bị đứt ở cuối (VD: "noi_dung": )
             truncated = re.sub(r',?\s*"[^"]*"?\s*:\s*$', '', truncated)
             
             # Try to fix by appending } or ]}
