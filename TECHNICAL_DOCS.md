@@ -492,3 +492,18 @@ Vì bạn muốn chạy nhiều tools trên cùng server, phương án dùng Doc
 | **`ModuleNotFoundError: No module named 'requests'`** hoặc `Invalid requirement: 'r\x00e\x00...'` | Thường xảy ra do sửa file `requirements.txt` bằng lệnh `echo` trên PowerShell (Windows). PowerShell tự động lưu dưới dạng UTF-16LE, đẩy lên Linux bị lỗi ký tự null `\x00`. | Mở file `requirements.txt` bằng code editor (như VSCode/Notepad), đảm bảo định dạng file lưu ở dạng **UTF-8** thuần. |
 | **`Error code: 503 ... High demand`** hoặc đứt gãy kết quả JSON | API của Gemini/OpenAI bị quá tải cục bộ, hoặc bị hết tokens giữa chừng khi trả về kết quả JSON dẫn đến cắt ngang chuỗi. | Code đã được vá: (1) Thêm thuật toán thử lại (Exponential backoff retry) tự động đợi 1s, 2s, 4s... nếu gặp mã 503/429. (2) Regex vá lỗi `ai_extractor.py` tự động cắt bỏ phần string JSON bị đứt đoạn cuối cùng. |
 | Truy cập port 8080 báo `ERR_CONNECTION_REFUSED` | 1. Firewall GCP chặn port.<br>2. Ứng dụng bên trong container bị Crash (chết) ngay sau khi khởi động. | Gõ lệnh `docker logs invoice-extractor` để xem log lỗi Python chi tiết. Nếu do Firewall, vào GCP Network mở cổng TCP 8080. |
+
+---
+
+## 10. Nhật ký cập nhật (Changelog)
+
+### [2026-06-24] Cập nhật định dạng Excel & Khắc phục Deploy
+**Đã xử lý (Thành công):**
+- **Cập nhật Định dạng Xuất Excel:** Thay đổi các cột trong báo cáo Excel từ format cũ sang định dạng mới hiển thị đầy đủ **Người Bán** và **Người Mua** khớp với giao diện Web.
+- **Fix Lỗi Thiếu Dữ Liệu (Field Mapping):** Khắc phục lỗi file Excel xuất ra bị trống dữ liệu do không khớp tên trường (field names) bằng cách thêm hàm helper `_get()`.
+- **Sửa Lỗi Tô Màu Trạng Thái:** Đổi logic kiểm tra cột Trạng thái sang kiểm tra bắt đầu bằng (`startswith`) để hệ thống bôi màu chính xác cho các dòng có chứa kèm ghi chú (ví dụ: `OK | Ghi chú thêm`).
+- **Triển Khai (Deployment):** Ghi đè nóng nội dung file `exporters/excel_export.py` trực tiếp trên máy chủ bằng SSH. Khởi động lại luồng Docker (`docker-compose down` và `docker-compose up -d --build`). Git Commit và push lên nhánh `master`.
+
+**Chưa xử lý (Cần thực hiện):**
+- **Lỗi CI/CD Pipeline (GitHub Actions):** Tiến trình đẩy code tự động bị lỗi "SSH authentication failed". Cần cấu hình đúng SSH Key trong GitHub Secrets.
+- **Lưu trữ cục bộ Dữ Liệu Upload:** Dữ liệu tab Nạp File hiện đang lưu trên RAM trình duyệt và sẽ bị mất khi refresh (F5). Cần phát triển tính năng lưu vào `localStorage`.
