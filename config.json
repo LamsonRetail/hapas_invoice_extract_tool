@@ -20,5 +20,6 @@
     },
     "openai_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
     "lark_content_field": "Text",
-    "lark_table_url": "https://o4pvcegwn6b.sg.larksuite.com/wiki/VGaBwRDdMi5JdEkQp8rlHxiSgRg?table=tblChTaysjhA5Rln&view=vewFjmqpy6"
+    "lark_table_url": "https://o4pvcegwn6b.sg.larksuite.com/wiki/VGaBwRDdMi5JdEkQp8rlHxiSgRg?table=tblChTaysjhA5Rln&view=vewFjmqpy6",
+    "lark_upload_url": "https://o4pvcegwn6b.sg.larksuite.com/base/Eaiabgix8a7mwqs63molRe6UgYf?table=tblYjTMstZfy1Ua6&view=vewViuZElT"
 }

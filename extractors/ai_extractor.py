@@ -9,25 +9,36 @@ from typing import Dict, Any, List, Optional
 from openai import OpenAI
 
 
-EXTRACTION_PROMPT = """Bạn là chuyên gia phân tích hoá đơn tài chính Việt Nam. Hãy phân tích hoá đơn/chứng từ thanh toán này và trích xuất thông tin chi tiết.
+EXTRACTION_PROMPT = """Bạn là chuyên gia phân tích hoá đơn tài chính và chứng từ giao dịch ngân hàng Việt Nam. Hãy phân tích hoá đơn/chứng từ thanh toán/bill chuyển khoản này và trích xuất thông tin chi tiết.
 
 QUAN TRỌNG:
-- Nếu hoá đơn CÓ VAT (thuế GTGT): tách riêng số tiền trước thuế, thuế suất %, tiền VAT, và tổng thanh toán sau thuế
-- Nếu hoá đơn KHÔNG CÓ VAT: chỉ lấy tổng số tiền cuối cùng cần thanh toán
-- Đọc kỹ mọi số liệu trên hoá đơn, đặc biệt là phần tổng cộng
-- PHÂN BIỆT rõ: Người bán (Seller/Đơn vị bán hàng) và Người mua (Buyer/Đơn vị mua hàng)
+- Với chứng từ giao dịch ngân hàng / bill chuyển khoản / ủy nhiệm chi:
+  + "ben_a": Tên tài khoản trích nợ / Bên chuyển (ví dụ: "CTY TNHH KDTM HTC VIET NAM", đọc tại 'Tên tài khoản trích nợ', 'Dr A/C Name', 'Bên chuyển')
+  + "so_tien_trich_no": Số tiền trích nợ / chuyển khoản (phải là số INTEGER sạch, không có dấu chấm/phẩy hay chữ VND, ví dụ 108000000 thay vì 108,000,000 VND)
+  + "ben_b": Tên người hưởng / bên nhận (ví dụ: "TTNNL CO., LTD", đọc tại 'Người hưởng', 'Beneficiary', 'Tên tài khoản nhận')
+  + "noi_dung": Nội dung thanh toán / Remarks / Diễn giải (ví dụ: "3053 htc thanh toan")
+  + "thoi_gian_xu_ly": Ngày giờ thời gian xử lý giao dịch (ví dụ: "10/07/2026 16:59:52" hoặc "10/07/2026 16:59", đọc tại 'Thời gian xử lý', 'Process on', 'Ngày tạo giao dịch', 'Ngày NH nhận giao dịch')
+
+- Với hoá đơn GTGT / tài chính:
+  + Nếu hoá đơn CÓ VAT: tách riêng số tiền trước thuế, thuế suất %, tiền VAT, và tổng thanh toán sau thuế
+  + Nếu KHÔNG CÓ VAT: chỉ lấy tổng số tiền cuối cùng cần thanh toán
+  + Phân biệt rõ: Người bán (Seller/Đơn vị bán hàng) và Người mua (Buyer/Đơn vị mua hàng)
 
 Trả về JSON theo ĐÚNG format sau (không thêm markdown code block):
 {
-    "so_hoa_don": "Số sê-ri / mã số hoá đơn (thường nằm ở PHẦN ĐẦU tài liệu, gần nhãn 'No.', 'Số HĐ', 'Invoice No', 'Số:', 'No:', 'Ký hiệu + Số'). Ghi NGUYÊN GIÁ TRỊ đọc được (có thể gồm chữ và số như AA/22K-0001234, hay chỉ số như 0001234). KHÔNG lấy mã số thuế, số tài khoản, số điện thoại. Nếu không tìm thấy ghi null",
-    "ngay_hoa_don": "Ngày phát hành hoá đơn, định dạng DD/MM/YYYY. Thường nằm ở đầu tài liệu gần chữ 'Ngày', 'Date', 'Ngày lập', 'Ngày tháng năm'. Nếu không rõ ghi null",
-    "ten_nguoi_ban": "Tên công ty/cá nhân BÁN hàng (Seller). Trên hoá đơn GTGT thường ghi là 'Đơn vị bán hàng', 'Seller', 'Người bán', 'Bên bán', 'Tên đơn vị' ở phần TRÊN. Lấy tên đầy đủ, nếu không rõ ghi null",
-    "ma_so_thue_nguoi_ban": "MST của người bán, thường đi kèm với tên người bán. Nếu không có ghi null",
-    "ten_nguoi_mua": "Tên công ty/cá nhân MUA hàng (Buyer). Trên hoá đơn GTGT thường ghi là 'Đơn vị mua hàng', 'Buyer', 'Người mua', 'Bên mua', 'Họ tên người mua hàng'. Lấy tên đầy đủ, nếu không rõ ghi null",
-    "ma_so_thue_nguoi_mua": "MST của người mua, thường đi kèm với tên người mua. Nếu không có ghi null",
+    "so_hoa_don": "Số sê-ri / mã số hoá đơn / Mã giao dịch (ví dụ: PM1126071003050676). Nếu không có ghi null",
+    "ngay_hoa_don": "Ngày phát hành / lập hoá đơn, định dạng DD/MM/YYYY. Nếu không có ghi null",
+    "thoi_gian_xu_ly": "Thời gian xử lý đầy đủ cả giờ phút giây (ví dụ: 10/07/2026 16:59:52 hoặc 10/07/2026 16:59). Nếu không có ghi null",
+    "ben_a": "Tên tài khoản trích nợ / Bên chuyển / Bên A (ví dụ: CTY TNHH KDTM HTC VIET NAM). Nếu không có ghi null",
+    "so_tien_trich_no": số tiền trích nợ dạng number integer (ví dụ: 108000000),
+    "ben_b": "Tên người hưởng / Bên nhận / Bên B (ví dụ: TTNNL CO., LTD). Nếu không có ghi null",
+    "ten_nguoi_ban": "Tên công ty/cá nhân BÁN hàng (Seller) hoặc Bên A. Lấy tên đầy đủ, nếu không rõ ghi null",
+    "ma_so_thue_nguoi_ban": "MST người bán. Nếu không có ghi null",
+    "ten_nguoi_mua": "Tên công ty/cá nhân MUA hàng (Buyer) hoặc Bên B. Lấy tên đầy đủ, nếu không rõ ghi null",
+    "ma_so_thue_nguoi_mua": "MST người mua. Nếu không có ghi null",
     "ten_nha_cung_cap": "Giống ten_nguoi_ban - để tương thích ngược",
     "ma_so_thue": "MST nhà cung cấp (người bán), nếu không có ghi null",
-    "noi_dung": "mô tả ngắn gọn nội dung thanh toán",
+    "noi_dung": "Mô tả / nội dung thanh toán / Remarks",
     "co_vat": true hoặc false,
     "danh_sach_hang_hoa": [
         {
@@ -42,16 +53,13 @@ Trả về JSON theo ĐÚNG format sau (không thêm markdown code block):
     "tien_vat": tiền VAT (number, null nếu không có VAT),
     "tong_thanh_toan": tổng tiền cuối cùng phải thanh toán (number),
     "loai_tien": "VND" hoặc loại tiền khác nếu có,
-    "ghi_chu": "ghi chú thêm nếu có thông tin đặc biệt, ví dụ: số liệu không khớp, hoá đơn mờ,..."
+    "ghi_chu": "ghi chú thêm nếu có"
 }
 
 CHÚ Ý:
-- Tất cả giá trị tiền phải là NUMBER (không có dấu chấm phân cách hàng nghìn, không có ký tự đặc biệt)
-- Ví dụ: 1500000 thay vì "1.500.000" hay "1,500,000 VND"
+- Tất cả giá trị tiền (tong_thanh_toan, so_tien_trich_no, tong_tien_truoc_thue, tien_vat) phải là NUMBER nguyên sạch (không phân cách hàng nghìn, ví dụ: 108000000)
 - Nếu không đọc được rõ, ghi giá trị gần nhất có thể và ghi chú trong trường ghi_chu
-- Nếu hoá đơn có nhiều trang, tổng hợp tất cả thông tin lại
-- PHÂN BIỆT RÕ người bán (đơn vị cung cấp hàng/dịch vụ) và người mua (đơn vị nhận hàng/thanh toán)
-- TRONG MỌI TRƯỜNG HỢP (kể cả ảnh mờ, không có thông tin, hoặc không phải hoá đơn): TUYỆT ĐỐI CHỈ TRẢ VỀ JSON, không kèm bất kỳ văn bản giải thích nào khác. Các trường không có dữ liệu hãy để null và điền nguyên nhân vào "ghi_chu".
+- TRONG MỌI TRƯỜNG HỢP: TUYỆT ĐỐI CHỈ TRẢ VỀ JSON, không kèm bất kỳ văn bản giải thích nào khác.
 """
 
 

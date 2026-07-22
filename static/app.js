@@ -19,6 +19,9 @@ let larkFilters = {
     unprocessed: false,
 };
 
+// Mode selection state: "bill" (Bóc tách Hóa đơn / Chứng từ) vs "vat" (Bóc tách VAT)
+let extractMode = "bill";
+
 // Range view state (null = show all)
 let rangeView = { from: null, to: null };
 
@@ -74,6 +77,49 @@ function switchToTab(tabName) {
     if (panel) panel.style.display = "block";
 }
 
+// ===== Mode Selection =====
+function updateModeUI() {
+    const hint = $("modeDefinitionHint");
+    const thead = $("uploadResultsHead");
+    if (extractMode === "bill") {
+        if (hint) {
+            hint.innerHTML = '<strong>💡 Bóc tách Hóa đơn / Chứng từ:</strong> Dùng cho bill chuyển khoản, ủy nhiệm chi, chứng từ giao dịch ngân hàng. Trích xuất: <em>Bên A (TK Trích nợ)</em>, <em>Số tiền trích nợ</em>, <em>Bên B (Người hưởng)</em>, <em>Nội dung thanh toán</em>, <em>Thời gian xử lý</em> & <em>Tệp đính kèm</em>.';
+        }
+        if (thead) {
+            thead.innerHTML = `<tr>
+                <th class="col-stt">STT</th>
+                <th>Tệp hóa đơn</th>
+                <th>Bên A (Trích nợ)</th>
+                <th class="col-before">Số tiền trích nợ</th>
+                <th>Bên B (Người hưởng)</th>
+                <th>Nội dung thanh toán</th>
+                <th>Thời gian xử lý</th>
+                <th class="col-status">Trạng thái</th>
+            </tr>`;
+        }
+    } else {
+        if (hint) {
+            hint.innerHTML = '<strong>💡 Bóc tách VAT:</strong> Dùng cho hoá đơn tài chính / GTGT. Trích xuất: <em>Số HĐ</em>, <em>Ngày HĐ</em>, <em>Người bán</em>, <em>Người mua</em>, <em>Có VAT?</em>, <em>Tiền trước thuế</em>, <em>Tiền VAT</em> & <em>Tổng cộng</em>.';
+        }
+        if (thead) {
+            thead.innerHTML = `<tr>
+                <th class="col-stt">STT</th>
+                <th>Tên file</th>
+                <th>Số HĐ</th>
+                <th>Ngày HĐ</th>
+                <th>Người bán</th>
+                <th>Người mua</th>
+                <th class="col-vat">VAT?</th>
+                <th class="col-before">Trước thuế</th>
+                <th class="col-vatamt">Tiền VAT</th>
+                <th class="col-before">Tổng cộng</th>
+                <th class="col-status">Trạng thái</th>
+            </tr>`;
+        }
+    }
+    renderUploadResults();
+}
+
 // ===== Upload Zone =====
 function setupUploadZone() {
     const zone = $("dropzone");
@@ -106,7 +152,7 @@ async function handleFiles(files) {
     }
 
     $("uploadProgressSection").style.display = "flex";
-    $("uploadResultsSection").style.display = "block"; // Show section so user sees results coming in
+    $("uploadResultsSection").style.display = "block";
 
     for (let i = 0; i < files.length; i++) {
         $("uploadProgressText").textContent = `Đang xử lý ${i + 1} / ${files.length} file...`;
@@ -128,11 +174,15 @@ async function handleFiles(files) {
                 trang_thai: "LỖI"
             });
         }
-        // Render incrementally
         renderUploadResults();
     }
 
     $("uploadProgressSection").style.display = "none";
+
+    // Auto push to Lark Base if checked
+    if ($("chkAutoPushLark") && $("chkAutoPushLark").checked) {
+        await pushUploadResultsToLark();
+    }
 }
 
 function renderUploadResults() {
@@ -146,52 +196,136 @@ function renderUploadResults() {
     const tbody = $("uploadResultsBody");
     tbody.innerHTML = uploadResults.map((r, i) => {
         const isError = r.trang_thai === "LỖI" || r.error;
-        let vatBadge = r.co_vat
-            ? '<span class="badge badge-vat">Có VAT</span>'
-            : '<span class="badge badge-no-vat">Không</span>';
-        if (isError) vatBadge = '<span class="badge badge-error">Lỗi</span>';
-
         let statusHtml = "";
         if (isError) {
             const errText = r.error || r.trang_thai;
             statusHtml = `<div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
                 <span class="badge badge-error">LỖI</span>
-                <span style="font-size: 11px; color: var(--danger-color); max-width: 150px; text-align: center; line-height: 1.2;">${truncate(errText, 100)}</span>
+                <span style="font-size: 11px; color: var(--danger); max-width: 150px; text-align: center; line-height: 1.2;">${truncate(errText, 100)}</span>
             </div>`;
         }
         else if (r.trang_thai && r.trang_thai.startsWith("OK")) statusHtml = '<span class="badge badge-ok">OK</span>';
-        else if (r.trang_thai && r.trang_thai.startsWith("CẢNH BÁO")) {
-            statusHtml = `<div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
-                <span class="badge badge-warn">Cảnh báo</span>
-                <span style="font-size: 11px; color: #b45309; max-width: 150px; text-align: center; line-height: 1.2;">${truncate(r.canh_bao || r.ghi_chu || "", 100)}</span>
-            </div>`;
-        }
         else statusHtml = `<span class="badge badge-ok">${truncate(r.trang_thai || "OK", 12)}</span>`;
 
-        return `<tr${isError ? ' class="row-error"' : ''}>
-            <td class="center">${i + 1}</td>
-            <td title="${r.filename}">${truncate(r.filename || "-", 30)}</td>
-            <td>${r.so_hoa_don || "-"}</td>
-            <td>${r.ngay_hoa_don || "-"}</td>
-            <td title="${r.ten_nguoi_ban || ""}">${truncate(r.ten_nguoi_ban || "-", 22)}</td>
-            <td title="${r.ten_nguoi_mua || ""}">${truncate(r.ten_nguoi_mua || "-", 22)}</td>
-            <td class="center">${vatBadge}</td>
-            <td class="number">${formatMoney(r.tien_truoc_thue)}</td>
-            <td class="number">${formatMoney(r.tien_vat)}</td>
-            <td class="number">${formatMoney(r.tong_thanh_toan)}</td>
-            <td class="center">${statusHtml}</td>
-        </tr>`;
+        if (extractMode === "bill") {
+            const benA = r.ben_a || r.ten_nguoi_ban || "-";
+            const benB = r.ben_b || r.ten_nguoi_mua || "-";
+            const soTien = r.so_tien_trich_no != null ? formatMoney(r.so_tien_trich_no) : (r.tong_thanh_toan != null ? formatMoney(r.tong_thanh_toan) : "-");
+            const thoiGian = r.thoi_gian_xu_ly || r.ngay_hoa_don || "-";
+            const noiDung = r.noi_dung || "-";
+
+            return `<tr${isError ? ' class="row-error"' : ''}>
+                <td class="center">${i + 1}</td>
+                <td title="${r.filename}">📄 ${truncate(r.filename || "-", 26)}</td>
+                <td title="${benA}">${truncate(benA, 24)}</td>
+                <td class="number" style="font-weight:600;">${soTien}</td>
+                <td title="${benB}">${truncate(benB, 24)}</td>
+                <td title="${noiDung}">${truncate(noiDung, 30)}</td>
+                <td>${thoiGian}</td>
+                <td class="center">${statusHtml}</td>
+            </tr>`;
+        } else {
+            let vatBadge = r.co_vat
+                ? '<span class="badge badge-vat">Có VAT</span>'
+                : '<span class="badge badge-no-vat">Không</span>';
+            if (isError) vatBadge = '<span class="badge badge-error">Lỗi</span>';
+
+            return `<tr${isError ? ' class="row-error"' : ''}>
+                <td class="center">${i + 1}</td>
+                <td title="${r.filename}">${truncate(r.filename || "-", 26)}</td>
+                <td>${r.so_hoa_don || "-"}</td>
+                <td>${r.ngay_hoa_don || "-"}</td>
+                <td title="${r.ten_nguoi_ban || ""}">${truncate(r.ten_nguoi_ban || "-", 22)}</td>
+                <td title="${r.ten_nguoi_mua || ""}">${truncate(r.ten_nguoi_mua || "-", 22)}</td>
+                <td class="center">${vatBadge}</td>
+                <td class="number">${formatMoney(r.tien_truoc_thue)}</td>
+                <td class="number">${formatMoney(r.tien_vat)}</td>
+                <td class="number">${formatMoney(r.tong_thanh_toan)}</td>
+                <td class="center">${statusHtml}</td>
+            </tr>`;
+        }
     }).join("");
+}
+
+async function pushUploadResultsToLark() {
+    if (uploadResults.length === 0) {
+        alert("Chưa có kết quả bóc tách nào để đẩy lên Lark Base!");
+        return;
+    }
+    const larkUrl = $("uploadLarkUrl").value.trim() || currentSettings.lark_upload_url || "https://o4pvcegwn6b.sg.larksuite.com/base/Eaiabgix8a7mwqs63molRe6UgYf?table=tblYjTMstZfy1Ua6&view=vewViuZElT";
+    if (!larkUrl) {
+        alert("Vui lòng nhập đường dẫn Lark Base nhận kết quả!");
+        return;
+    }
+
+    const btn = $("btnPushUploadLark");
+    const statusMsg = $("pushStatusMsg");
+    if (btn) { btn.disabled = true; btn.textContent = "Đang đẩy..."; }
+    if (statusMsg) { statusMsg.textContent = "⏳ Đang đẩy lên Lark Base..."; statusMsg.className = "push-status-msg pending"; }
+
+    try {
+        const res = await fetch("/api/lark/push-upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                results: uploadResults,
+                lark_url: larkUrl,
+                mode: extractMode
+            }),
+        });
+
+        let data = {};
+        try {
+            data = await res.json();
+        } catch (err) {
+            throw new Error(`Lỗi máy chủ (${res.status} ${res.statusText})`);
+        }
+
+        if (!res.ok) {
+            throw new Error(data.detail || "Không thể đẩy lên Lark Base");
+        }
+
+        if (statusMsg) {
+            statusMsg.textContent = `✅ ${data.message}`;
+            statusMsg.className = "push-status-msg success";
+        }
+    } catch (e) {
+        if (statusMsg) {
+            statusMsg.textContent = `❌ ${e.message}`;
+            statusMsg.className = "push-status-msg error";
+        }
+        alert("❌ Lỗi đẩy Lark Base: " + e.message);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg> Đẩy lên Lark Base`;
+        }
+    }
 }
 
 // ===== Event Listeners =====
 function setupEventListeners() {
+    // Mode radio switches
+    document.querySelectorAll('input[name="extractMode"]').forEach(radio => {
+        radio.addEventListener("change", (e) => {
+            extractMode = e.target.value;
+            updateModeUI();
+        });
+    });
+
     // Upload tab
     $("btnClearUpload").addEventListener("click", () => {
         uploadResults = [];
+        const statusMsg = $("pushStatusMsg");
+        if (statusMsg) statusMsg.textContent = "";
         renderUploadResults();
     });
     $("btnExportUpload").addEventListener("click", () => exportExcelData(uploadResults));
+    $("btnPushUploadLark").addEventListener("click", pushUploadResultsToLark);
 
     // Larkbase tab
     $('btnRefresh').addEventListener('click', refreshRecords);
@@ -251,6 +385,10 @@ function populateSettingsForm(s) {
     $("sOpenaiKey").value = s.openai_api_key || "";
     $("sOpenaiBaseUrl").value = s.openai_base_url || "https://api.openai.com/v1";
     $("sLarkUrl").value = s.lark_table_url || "";
+
+    const uploadUrl = s.lark_upload_url || "https://o4pvcegwn6b.sg.larksuite.com/base/Eaiabgix8a7mwqs63molRe6UgYf?table=tblYjTMstZfy1Ua6&view=vewViuZElT";
+    if ($("uploadLarkUrl")) $("uploadLarkUrl").value = uploadUrl;
+    if ($("sLarkUploadUrl")) $("sLarkUploadUrl").value = uploadUrl;
 
     // Sync model select dropdown
     const savedModel = s.openai_model || "gpt-4o";
@@ -392,6 +530,7 @@ async function setupColumns() {
 }
 
 async function saveSettingsForm() {
+    const uploadUrl = ($("sLarkUploadUrl") ? $("sLarkUploadUrl").value.trim() : "") || ($("uploadLarkUrl") ? $("uploadLarkUrl").value.trim() : "");
     const data = {
         lark_app_id: $("sLarkAppId").value.trim(),
         lark_app_secret: $("sLarkAppSecret").value.trim(),
@@ -399,6 +538,7 @@ async function saveSettingsForm() {
         openai_model: getSelectedModel(),
         openai_base_url: $("sOpenaiBaseUrl").value.trim(),
         lark_table_url: $("sLarkUrl").value.trim(),
+        lark_upload_url: uploadUrl,
         lark_app_token: currentSettings.lark_app_token || "",
         lark_table_id: currentSettings.lark_table_id || "",
         lark_view_id: currentSettings.lark_view_id || "",

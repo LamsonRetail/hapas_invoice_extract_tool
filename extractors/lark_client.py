@@ -131,6 +131,45 @@ class LarkClient:
 
         return True
 
+    def create_record(self, app_token: str, table_id: str, fields: dict) -> dict:
+        """Tạo 1 record mới trong Bitable."""
+        url = f"{self.base_url}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+
+        resp = requests.post(url, headers=self._headers(), json={"fields": fields}, timeout=LARK_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("code") != 0:
+            raise Exception(f"Lark create_record error: {data.get('msg')}")
+
+        return data.get("data", {}).get("record", {})
+
+    def batch_create_records(self, app_token: str, table_id: str, records_fields: List[dict]) -> List[dict]:
+        """Tạo nhiều records cùng lúc trong Bitable (batch up to 500 records)."""
+        if not records_fields:
+            return []
+
+        url = f"{self.base_url}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create"
+        body = {
+            "records": [{"fields": f} for f in records_fields]
+        }
+
+        resp = requests.post(url, headers=self._headers(), json=body, timeout=LARK_TIMEOUT)
+        # Surface the real Lark error message even on HTTP 4xx/5xx
+        try:
+            data = resp.json()
+        except ValueError:
+            resp.raise_for_status()
+            raise
+
+        if data.get("code") != 0:
+            # Do NOT retry with the same payload: attachment file_tokens are
+            # single-use, so a silent single-record fallback would fail with
+            # AttachFieldConvFail and hide the real cause. Surface it instead.
+            raise Exception(f"Lark batch_create error ({data.get('code')}): {data.get('msg')}")
+
+        return data.get("data", {}).get("records", [])
+
     # ========== Fields ==========
 
     def list_fields(self, app_token: str, table_id: str) -> List[dict]:
@@ -172,6 +211,18 @@ class LarkClient:
 
         return data.get("data", {}).get("field", {})
 
+    def update_field(self, app_token: str, table_id: str, field_id: str, field_name: str, field_type: int) -> dict:
+        """Đổi kiểu / tên của một field đã tồn tại."""
+        url = f"{self.base_url}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}"
+        resp = requests.put(url, headers=self._headers(), json={"field_name": field_name, "type": field_type}, timeout=LARK_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("code") != 0:
+            raise Exception(f"Lark update_field error: {data.get('msg')}")
+
+        return data.get("data", {}).get("field", {})
+
     def ensure_result_fields(self, app_token: str, table_id: str, result_fields: dict) -> dict:
         """
         Đảm bảo các cột kết quả tồn tại. Tạo nếu chưa có.
@@ -208,6 +259,33 @@ class LarkClient:
         return field_map
 
     # ========== Attachments ==========
+
+    def upload_media(self, file_path: str, file_name: str, app_token: str, parent_type: str = "bitable_file") -> str:
+        """
+        Upload a local file to Lark Drive as a Bitable attachment media.
+        Returns the file_token to be placed into an attachment field.
+        """
+        url = f"{self.base_url}/open-apis/drive/v1/medias/upload_all"
+        size = os.path.getsize(file_path)
+        headers = {"Authorization": f"Bearer {self._get_token()}"}
+
+        with open(file_path, "rb") as fh:
+            data = {
+                "file_name": file_name,
+                "parent_type": parent_type,
+                "parent_node": app_token,
+                "size": str(size),
+                "extra": json.dumps({"drive_route_token": app_token}),
+            }
+            files = {"file": (file_name, fh)}
+            resp = requests.post(url, headers=headers, data=data, files=files, timeout=120)
+
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("code") != 0:
+            raise Exception(f"Lark upload_media error: {result.get('msg')}")
+
+        return result.get("data", {}).get("file_token", "")
 
     def download_attachment(
         self, file_token: str,

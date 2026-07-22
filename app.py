@@ -71,6 +71,9 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 # In-memory task storage
 tasks: Dict[str, Dict[str, Any]] = {}
 
+# Uploaded files kept for later push to Lark (file_id -> saved path)
+uploaded_files: Dict[str, str] = {}
+
 
 # ============================================================
 # Helpers
@@ -167,6 +170,7 @@ async def get_settings():
         "lark_content_field": cfg.get("lark_content_field", ""),
         "lark_result_fields": {**DEFAULT_RESULT_FIELDS, **cfg.get("lark_result_fields", {})},
         "lark_table_url": cfg.get("lark_table_url", ""),
+        "lark_upload_url": cfg.get("lark_upload_url", "https://o4pvcegwn6b.sg.larksuite.com/base/Eaiabgix8a7mwqs63molRe6UgYf?table=tblYjTMstZfy1Ua6&view=vewViuZElT"),
         "lark_filters": cfg.get("lark_filters", []),
     }
 
@@ -181,7 +185,7 @@ async def save_settings(data: dict):
         "openai_api_key", "openai_model", "openai_base_url",
         "lark_app_token", "lark_table_id", "lark_view_id",
         "lark_attachment_field", "lark_content_field",
-        "lark_result_fields", "lark_table_url", "lark_filters",
+        "lark_result_fields", "lark_table_url", "lark_upload_url", "lark_filters",
     ]
     for key in allowed:
         if key in data:
@@ -629,7 +633,7 @@ async def export_excel(data: dict):
 @app.post("/api/upload")
 async def upload_and_extract(files: List[UploadFile] = File(...)):
     """
-    Upload files directly and extract invoice data via AI.
+    Upload files directly and extract invoice / bill data via AI.
     Supports PDF, images (JPG, PNG), Word, Excel.
     Returns list of extracted results immediately.
     """
@@ -647,21 +651,29 @@ async def upload_and_extract(files: List[UploadFile] = File(...)):
 
     for upload in files:
         filename = upload.filename or "file"
-        tmp_path = UPLOAD_DIR / f"{uuid.uuid4()}_{filename}"
+        file_id = str(uuid.uuid4())
+        saved_path = UPLOAD_DIR / f"{file_id}_{filename}"
         try:
             content = await upload.read()
-            with open(tmp_path, "wb") as f:
+            with open(saved_path, "wb") as f:
                 f.write(content)
 
-            content_blocks = FileHandler.process_file(str(tmp_path))
+            content_blocks = FileHandler.process_file(str(saved_path))
             raw_result = extractor.extract_invoice(content_blocks, filename)
             processed = calculator.process(raw_result)
+
+            uploaded_files[file_id] = str(saved_path)
 
             co_vat = processed.get("co_vat", False)
             results.append({
                 "filename": filename,
+                "file_id": file_id,
                 "so_hoa_don": raw_result.get("so_hoa_don"),
                 "ngay_hoa_don": raw_result.get("ngay_hoa_don"),
+                "thoi_gian_xu_ly": raw_result.get("thoi_gian_xu_ly") or raw_result.get("ngay_hoa_don"),
+                "ben_a": raw_result.get("ben_a") or raw_result.get("ten_nguoi_ban") or raw_result.get("ten_nha_cung_cap"),
+                "so_tien_trich_no": raw_result.get("so_tien_trich_no") or processed.get("tong_thanh_toan_computed"),
+                "ben_b": raw_result.get("ben_b") or raw_result.get("ten_nguoi_mua"),
                 "ten_nguoi_ban": raw_result.get("ten_nguoi_ban") or raw_result.get("ten_nha_cung_cap"),
                 "ten_nguoi_mua": raw_result.get("ten_nguoi_mua"),
                 "ma_so_thue_nguoi_ban": raw_result.get("ma_so_thue_nguoi_ban") or raw_result.get("ma_so_thue"),
@@ -679,19 +691,231 @@ async def upload_and_extract(files: List[UploadFile] = File(...)):
             })
         except Exception as e:
             traceback.print_exc()
+            try:
+                os.unlink(saved_path)
+            except:
+                pass
+            uploaded_files.pop(file_id, None)
             results.append({
                 "filename": filename,
                 "error": str(e),
                 "trang_thai": "LỖI",
                 "co_vat": False,
             })
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
 
     return {"results": results}
+
+
+@app.post("/api/lark/push-upload")
+async def push_upload_results_to_lark(data: dict):
+    """
+    Push extracted upload results to a specified Lark Base table.
+    Smart mapping existing columns and gracefully handling field permissions.
+    """
+    results = data.get("results", [])
+    if not results:
+        raise HTTPException(status_code=400, detail="Không có dữ liệu để đẩy lên Lark Base")
+
+    cfg = load_config()
+    default_lark_url = cfg.get("lark_upload_url", "https://o4pvcegwn6b.sg.larksuite.com/base/Eaiabgix8a7mwqs63molRe6UgYf?table=tblYjTMstZfy1Ua6&view=vewViuZElT")
+    lark_url = data.get("lark_url") or default_lark_url
+    mode = data.get("mode", "bill")  # "bill" or "vat"
+
+    parsed = parse_lark_url(lark_url)
+    app_token = parsed.get("app_token")
+    table_id = parsed.get("table_id")
+
+    if not app_token or not table_id:
+        raise HTTPException(status_code=400, detail="Không thể lấy app_token hoặc table_id từ đường dẫn Lark Base")
+
+    lark = make_lark_client()
+    if parsed.get("base_url"):
+        lark.base_url = parsed["base_url"]
+
+    # Fetch existing fields in target Lark table
+    try:
+        existing_fields = lark.list_fields(app_token, table_id)
+        existing_names = {f["field_name"]: f for f in existing_fields}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Không thể kết nối bảng Lark Base: {str(e)}")
+
+    if mode == "bill":
+        target_columns = {
+            "Bên A": 1,              # Text
+            "Số tiền trích nợ": 2,    # Number
+            "Bên B": 1,              # Text
+            "Nội dung": 1,            # Text
+            "Thời gian xử lý": 1,     # Text
+            "Hóa đơn": 17,            # Attachment
+            "Trạng thái": 1,          # Text
+        }
+    else:
+        rf = {**DEFAULT_RESULT_FIELDS, **cfg.get("lark_result_fields", {})}
+        target_columns = {
+            rf.get("co_vat", "AI_Có_VAT"): 1,
+            rf.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế"): 2,
+            rf.get("tien_vat", "AI_Tiền_VAT"): 2,
+            rf.get("so_hoa_don", "AI_Số_HĐ"): 1,
+            rf.get("ngay_hoa_don", "AI_Ngày_HĐ"): 1,
+            rf.get("ten_nguoi_ban", "AI_Người_Bán"): 1,
+            rf.get("ten_nguoi_mua", "AI_Người_Mua"): 1,
+            rf.get("trang_thai", "AI_Trạng_Thái"): 1,
+        }
+
+    # Attempt to auto-create missing fields safely
+    for col_name, col_type in target_columns.items():
+        if col_name and col_name not in existing_names:
+            try:
+                lark.create_field(app_token, table_id, col_name, col_type)
+                existing_names[col_name] = {"field_name": col_name, "type": col_type}
+            except Exception as e:
+                # If bot doesn't have field edit permission (403), ignore safely
+                pass
+
+    # Helper function to find best matching existing column name
+    def find_best_column(preferred_name: str, candidates: list) -> Optional[str]:
+        if preferred_name in existing_names:
+            return preferred_name
+        for cand in candidates:
+            if cand in existing_names:
+                return cand
+        # Case-insensitive fallback
+        lower_names = {k.lower(): k for k in existing_names}
+        if preferred_name.lower() in lower_names:
+            return lower_names[preferred_name.lower()]
+        for cand in candidates:
+            if cand.lower() in lower_names:
+                return lower_names[cand.lower()]
+        return None
+
+    # Resolve field mappings
+    col_map = {}
+    if mode == "bill":
+        col_map["ben_a"] = find_best_column("Bên A", ["Bên A (Trích nợ)", "Tên tài khoản trích nợ", "Trích nợ", "Bên chuyển", "Người bán", "AI_Người_Bán", "Text"])
+        col_map["so_tien"] = find_best_column("Số tiền trích nợ", ["Số tiền", "SỐ TIỀN", "Amount", "Số tiền ~ Số tiền", "Tổng tiền", "AI_Tiền_Trước_Thuế"])
+        col_map["ben_b"] = find_best_column("Bên B", ["Bên B (Người hưởng)", "Người hưởng", "Beneficiary", "Bên nhận", "Người mua", "AI_Người_Mua"])
+        col_map["noi_dung"] = find_best_column("Nội dung", ["Nội dung thanh toán", "Text", "Mô tả", "Remarks", "Ghi chú"])
+        col_map["thoi_gian"] = find_best_column("Thời gian xử lý", ["Thời gian", "Ngày HĐ", "AI_Ngày_HĐ", "Process on", "Ngày tạo"])
+        col_map["file"] = find_best_column("Hóa đơn", ["Tệp đính kèm", "File", "Tệp", "Bill", "Tên file"])
+        col_map["status"] = find_best_column("Trạng thái", ["AI_Trạng_Thái", "Status"])
+    else:
+        rf = {**DEFAULT_RESULT_FIELDS, **cfg.get("lark_result_fields", {})}
+        col_map["co_vat"] = find_best_column(rf.get("co_vat", "AI_Có_VAT"), ["Có VAT", "VAT?"])
+        col_map["tien_truoc_thue"] = find_best_column(rf.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế"), ["Trước thuế", "Số tiền trước thuế"])
+        col_map["tien_vat"] = find_best_column(rf.get("tien_vat", "AI_Tiền_VAT"), ["Tiền VAT", "VAT"])
+        col_map["so_hoa_don"] = find_best_column(rf.get("so_hoa_don", "AI_Số_HĐ"), ["Số HĐ", "Số hoá đơn"])
+        col_map["ngay_hoa_don"] = find_best_column(rf.get("ngay_hoa_don", "AI_Ngày_HĐ"), ["Ngày HĐ", "Ngày hoá đơn"])
+        col_map["ten_nguoi_ban"] = find_best_column(rf.get("ten_nguoi_ban", "AI_Người_Bán"), ["Người bán", "Bên A"])
+        col_map["ten_nguoi_mua"] = find_best_column(rf.get("ten_nguoi_mua", "AI_Người_Mua"), ["Người mua", "Bên B"])
+        col_map["status"] = find_best_column(rf.get("trang_thai", "AI_Trạng_Thái"), ["Trạng thái", "Status"])
+
+    # Ensure the "Hóa đơn" column is an Attachment field (type 17).
+    # If it exists as another type (e.g. Text), convert it in place.
+    file_field_type = None
+    if mode == "bill":
+        _c_file = col_map.get("file")
+        if _c_file and _c_file in existing_names:
+            _f = existing_names[_c_file]
+            file_field_type = _f.get("type")
+            if file_field_type != 17 and _f.get("field_id"):
+                try:
+                    lark.update_field(app_token, table_id, _f["field_id"], _c_file, 17)
+                    file_field_type = 17
+                except Exception as e:
+                    print(f"  -> Could not convert '{_c_file}' to attachment: {e}", flush=True)
+
+    uploaded_tokens: Dict[str, str] = {}
+
+    records_payload = []
+    for r in results:
+        fields = {}
+        if mode == "bill":
+            c_a = col_map.get("ben_a")
+            c_b = col_map.get("ben_b")
+            c_nd = col_map.get("noi_dung")
+            c_tg = col_map.get("thoi_gian")
+            c_file = col_map.get("file")
+            c_st = col_map.get("status")
+            c_tien = col_map.get("so_tien")
+
+            if c_a: fields[c_a] = r.get("ben_a") or r.get("ten_nguoi_ban") or ""
+            if c_b: fields[c_b] = r.get("ben_b") or r.get("ten_nguoi_mua") or ""
+            if c_nd: fields[c_nd] = r.get("noi_dung") or ""
+            if c_tg: fields[c_tg] = r.get("thoi_gian_xu_ly") or r.get("ngay_hoa_don") or ""
+            if c_file:
+                if file_field_type == 17:
+                    fid = r.get("file_id")
+                    fpath = uploaded_files.get(fid) if fid else None
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            token = uploaded_tokens.get(fid)
+                            if not token:
+                                token = lark.upload_media(fpath, r.get("filename") or "file", app_token)
+                                uploaded_tokens[fid] = token
+                            if token:
+                                fields[c_file] = [{"file_token": token}]
+                        except Exception as e:
+                            print(f"  -> Upload attachment failed: {e}", flush=True)
+                else:
+                    fields[c_file] = r.get("filename") or ""
+            if c_st: fields[c_st] = r.get("trang_thai") or "OK"
+
+            if c_tien:
+                so_tien = r.get("so_tien_trich_no")
+                if so_tien is None: so_tien = r.get("tong_thanh_toan")
+                if so_tien is not None:
+                    try:
+                        fields[c_tien] = float(so_tien)
+                    except (ValueError, TypeError):
+                        fields[c_tien] = str(so_tien)
+        else:
+            c_cv = col_map.get("co_vat")
+            c_tt = col_map.get("tien_truoc_thue")
+            c_tv = col_map.get("tien_vat")
+            c_shd = col_map.get("so_hoa_don")
+            c_nhd = col_map.get("ngay_hoa_don")
+            c_nb = col_map.get("ten_nguoi_ban")
+            c_nm = col_map.get("ten_nguoi_mua")
+            c_st = col_map.get("status")
+
+            if c_cv: fields[c_cv] = "Có" if r.get("co_vat") else "Không"
+            if c_st: fields[c_st] = r.get("trang_thai") or "OK"
+            if c_shd and r.get("so_hoa_don"): fields[c_shd] = str(r["so_hoa_don"])
+            if c_nhd and r.get("ngay_hoa_don"): fields[c_nhd] = str(r["ngay_hoa_don"])
+            if c_nb and r.get("ten_nguoi_ban"): fields[c_nb] = str(r["ten_nguoi_ban"])
+            if c_nm and r.get("ten_nguoi_mua"): fields[c_nm] = str(r["ten_nguoi_mua"])
+            if c_tt and r.get("tien_truoc_thue") is not None:
+                try: fields[c_tt] = float(r["tien_truoc_thue"])
+                except: pass
+            if c_tv and r.get("tien_vat") is not None:
+                try: fields[c_tv] = float(r["tien_vat"])
+                except: pass
+
+        if fields:
+            records_payload.append(fields)
+
+    if not records_payload:
+        raise HTTPException(status_code=400, detail="Không có cột nào khớp giữa kết quả bóc tách và bảng Lark Base")
+
+    try:
+        created = lark.batch_create_records(app_token, table_id, records_payload)
+        # Clean up local files after a successful push
+        for r in results:
+            fid = r.get("file_id")
+            if fid and fid in uploaded_files:
+                try:
+                    os.unlink(uploaded_files[fid])
+                except:
+                    pass
+                uploaded_files.pop(fid, None)
+        return {
+            "ok": True,
+            "count": len(created),
+            "message": f"Đã đẩy thành công {len(created)} bản ghi vào Lark Base!"
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Lỗi khi ghi bản ghi vào Lark Base: {str(e)}")
 
 
 if __name__ == "__main__":

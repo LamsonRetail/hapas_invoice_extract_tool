@@ -599,3 +599,165 @@ select option { background: var(--bg-card); }
     .range-picker { flex-wrap: wrap; gap: 6px; }
     .range-picker input[type="number"] { width: 60px; }
 }
+
+/* ===== Mode Selection Card ===== */
+.mode-selection-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 16px 24px;
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.mode-switcher-container {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.mode-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+/* Segmented Control */
+.segmented-control {
+    display: inline-flex;
+    background: var(--bg-input);
+    padding: 4px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    gap: 4px;
+}
+
+.segmented-control input[type="radio"] {
+    display: none;
+}
+
+.segmented-control label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.84rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition);
+    user-select: none;
+}
+
+.segmented-control label:hover {
+    color: var(--text-primary);
+}
+
+.segmented-control input[type="radio"]:checked + label {
+    background: linear-gradient(135deg, var(--accent), #a855f7);
+    color: white;
+    box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+/* Definition Hint */
+.mode-definition-hint {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    background: rgba(99, 102, 241, 0.08);
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    border-radius: 6px;
+    line-height: 1.5;
+}
+
+.mode-definition-hint strong {
+    color: var(--text-primary);
+}
+
+/* ===== Lark Target Card & Button ===== */
+.lark-target-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 14px 20px;
+    margin-bottom: 20px;
+}
+
+.target-bar-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.target-input-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 300px;
+}
+
+.target-input-group label {
+    font-size: 0.84rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.target-input-group input[type="url"] {
+    flex: 1;
+    padding: 8px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 0.83rem;
+    outline: none;
+    transition: var(--transition);
+}
+
+.target-input-group input[type="url"]:focus {
+    border-color: var(--lark-blue);
+    box-shadow: 0 0 0 3px rgba(51, 112, 255, 0.2);
+}
+
+.auto-push-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.btn-lark {
+    background: linear-gradient(135deg, var(--lark-blue), #2563eb);
+    color: white;
+    box-shadow: 0 2px 12px rgba(51, 112, 255, 0.3);
+}
+
+.btn-lark:not(:disabled):hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(51, 112, 255, 0.4);
+}
+
+.lark-icon-blue {
+    color: var(--lark-blue);
+}
+
+.push-status-msg {
+    font-size: 0.82rem;
+    margin-left: 12px;
+}
+.push-status-msg.success { color: var(--success); font-weight: 500; }
+.push-status-msg.error { color: var(--danger); font-weight: 500; }
+.push-status-msg.pending { color: var(--warning); }

@@ -67,6 +67,36 @@
 
             <!-- ======== TAB: NẠP FILE ======== -->
             <section id="tabPanelUpload" class="tab-panel">
+
+                <!-- Mode Selector & Definition Hint -->
+                <div class="mode-selection-card">
+                    <div class="mode-switcher-container">
+                        <span class="mode-title">Chế độ bóc tách:</span>
+                        <div class="segmented-control">
+                            <input type="radio" name="extractMode" id="modeBill" value="bill" checked>
+                            <label for="modeBill">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                    <polyline points="14 2 14 8 20 8"/>
+                                    <line x1="16" y1="13" x2="8" y2="13"/>
+                                </svg>
+                                Bóc tách Hóa đơn / Chứng từ
+                            </label>
+
+                            <input type="radio" name="extractMode" id="modeVat" value="vat">
+                            <label for="modeVat">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+                                </svg>
+                                Bóc tách VAT
+                            </label>
+                        </div>
+                    </div>
+                    <div class="mode-definition-hint" id="modeDefinitionHint">
+                        <strong>💡 Bóc tách Hóa đơn / Chứng từ:</strong> Dùng cho bill chuyển khoản, ủy nhiệm chi, chứng từ giao dịch ngân hàng. Trích xuất: <em>Bên A (TK Trích nợ)</em>, <em>Số tiền trích nợ</em>, <em>Bên B (Người hưởng)</em>, <em>Nội dung thanh toán</em>, <em>Thời gian xử lý</em> & <em>Tệp đính kèm</em>.
+                    </div>
+                </div>
+
                 <!-- Drop Zone -->
                 <div class="dropzone-wrapper">
                     <div class="dropzone" id="dropzone">
@@ -77,7 +107,7 @@
                                 <line x1="12" y1="3" x2="12" y2="15"/>
                             </svg>
                         </div>
-                        <h2 class="dropzone-title">Kéo thả hoá đơn vào đây</h2>
+                        <h2 class="dropzone-title">Kéo thả hoá đơn / chứng từ vào đây</h2>
                         <p class="dropzone-subtitle">Hỗ trợ PDF, JPG, PNG, DOCX, XLSX · Nhiều file cùng lúc</p>
                         <button class="btn btn-primary" id="btnBrowseFiles">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -90,12 +120,31 @@
                     </div>
                 </div>
 
+                <!-- Target Lark Base Bar -->
+                <div class="lark-target-card">
+                    <div class="target-bar-row">
+                        <div class="target-input-group">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lark-icon-blue">
+                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                            </svg>
+                            <label for="uploadLarkUrl">Link Lark Base nhận dữ liệu:</label>
+                            <input type="url" id="uploadLarkUrl" placeholder="https://xxx.larksuite.com/base/...">
+                        </div>
+                        <label class="auto-push-checkbox">
+                            <input type="checkbox" id="chkAutoPushLark">
+                            <span>Tự động đẩy vào Lark Base sau khi bóc tách</span>
+                        </label>
+                    </div>
+                </div>
+
                 <!-- Upload Results -->
                 <div id="uploadResultsSection" style="display:none;">
                     <div class="results-toolbar">
                         <div class="results-toolbar-left">
                             <h3 id="uploadResultsTitle">Kết quả bóc tách</h3>
                             <span class="badge-count" id="uploadResultsCount">0 file</span>
+                            <span id="pushStatusMsg" class="push-status-msg"></span>
                         </div>
                         <div class="results-toolbar-right">
                             <button class="btn btn-secondary btn-sm" id="btnClearUpload">
@@ -105,30 +154,35 @@
                                 </svg>
                                 Xóa tất cả
                             </button>
-                            <button class="btn btn-primary" id="btnExportUpload">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <button class="btn btn-secondary btn-sm" id="btnExportUpload">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                                     <polyline points="7 10 12 15 17 10"/>
                                     <line x1="12" y1="15" x2="12" y2="3"/>
                                 </svg>
                                 Xuất Excel
                             </button>
+                            <button class="btn btn-lark" id="btnPushUploadLark">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                                Đẩy lên Lark Base
+                            </button>
                         </div>
                     </div>
                     <div class="table-container">
                         <table class="data-table" id="uploadResultsTable">
-                            <thead>
+                            <thead id="uploadResultsHead">
                                 <tr>
                                     <th class="col-stt">STT</th>
-                                    <th>Tên file</th>
-                                    <th>Số HĐ</th>
-                                    <th>Ngày HĐ</th>
-                                    <th>Người bán</th>
-                                    <th>Người mua</th>
-                                    <th class="col-vat">VAT?</th>
-                                    <th class="col-before">Trước thuế</th>
-                                    <th class="col-vatamt">Tiền VAT</th>
-                                    <th class="col-before">Tổng cộng</th>
+                                    <th>Tệp hóa đơn</th>
+                                    <th>Bên A (Trích nợ)</th>
+                                    <th class="col-before">Số tiền trích nợ</th>
+                                    <th>Bên B (Người hưởng)</th>
+                                    <th>Nội dung thanh toán</th>
+                                    <th>Thời gian xử lý</th>
                                     <th class="col-status">Trạng thái</th>
                                 </tr>
                             </thead>
@@ -338,12 +392,18 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="sLarkUrl">Link bảng Bitable</label>
+                            <label for="sLarkUrl">Link bảng Bitable (Tab Larkbase)</label>
                             <div class="input-row">
                                 <input type="url" id="sLarkUrl" placeholder="https://xxx.larksuite.com/base/...">
                                 <button class="btn btn-secondary btn-sm" id="btnResolveUrl">Kết nối</button>
                             </div>
-                            <p class="hint">Dán link bảng Lark Bitable từ trình duyệt vào đây</p>
+                            <p class="hint">Dán link bảng Lark Bitable sử dụng cho tab Larkbase</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="sLarkUploadUrl">Link Lark Base nhận dữ liệu khi Nạp File</label>
+                            <input type="url" id="sLarkUploadUrl" placeholder="https://o4pvcegwn6b.sg.larksuite.com/base/...">
+                            <p class="hint">Đường dẫn bảng Lark mặc định để lưu kết quả khi nạp bill trực tiếp</p>
                         </div>
 
                         <div id="resolvedInfo" style="display:none;" class="resolved-info">
