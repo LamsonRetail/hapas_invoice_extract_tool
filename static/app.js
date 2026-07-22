@@ -12,6 +12,9 @@ let pollInterval = null;
 let processingResults = [];
 let uploadResults = [];
 let currentSettings = {};
+let uploadCancelled = false;
+let uploadAbortController = null;
+const UPLOAD_THROTTLE_MS = 1500;
 
 // Smart filter state
 let larkFilters = {
@@ -142,6 +145,16 @@ function setupUploadZone() {
         const files = Array.from(e.dataTransfer.files);
         if (files.length > 0) handleFiles(files);
     });
+
+    const btnCancel = $("btnCancelUpload");
+    if (btnCancel) {
+        btnCancel.addEventListener("click", () => {
+            uploadCancelled = true;
+            if (uploadAbortController) uploadAbortController.abort();
+            btnCancel.disabled = true;
+            btnCancel.textContent = "Đang hủy...";
+        });
+    }
 }
 
 async function handleFiles(files) {
@@ -151,16 +164,23 @@ async function handleFiles(files) {
         return;
     }
 
+    uploadCancelled = false;
+    const btnCancel = $("btnCancelUpload");
+    if (btnCancel) { btnCancel.disabled = false; btnCancel.textContent = "✕ Hủy xử lý"; }
+
     $("uploadProgressSection").style.display = "flex";
     $("uploadResultsSection").style.display = "block";
 
+    let cancelledEarly = false;
     for (let i = 0; i < files.length; i++) {
+        if (uploadCancelled) { cancelledEarly = true; break; }
         $("uploadProgressText").textContent = `Đang xử lý ${i + 1} / ${files.length} file...`;
         const formData = new FormData();
         formData.append("files", files[i]);
 
+        uploadAbortController = new AbortController();
         try {
-            const res = await fetch("/api/upload", { method: "POST", body: formData });
+            const res = await fetch("/api/upload", { method: "POST", body: formData, signal: uploadAbortController.signal });
             if (!res.ok) {
                 const err = await res.json();
                 throw new Error(err.detail || "Lỗi máy chủ (HTTP " + res.status + ")");
@@ -168,16 +188,31 @@ async function handleFiles(files) {
             const data = await res.json();
             uploadResults = uploadResults.concat(data.results || []);
         } catch (e) {
+            // Nếu người dùng chủ động hủy thì không ghi dòng lỗi cho file đang chạy dở
+            if (uploadCancelled && e.name === "AbortError") { cancelledEarly = true; break; }
             uploadResults.push({
                 filename: files[i].name,
                 error: e.message,
                 trang_thai: "LỖI"
             });
+        } finally {
+            uploadAbortController = null;
         }
         renderUploadResults();
+
+        // Giãn nhịp giữa các file để tránh burst đụng giới hạn rate limit (429)
+        if (i < files.length - 1 && !uploadCancelled) {
+            await new Promise((resolve) => setTimeout(resolve, UPLOAD_THROTTLE_MS));
+        }
     }
 
     $("uploadProgressSection").style.display = "none";
+    renderUploadResults();
+
+    if (cancelledEarly) {
+        alert(`Đã hủy xử lý. Đã hoàn tất ${uploadResults.length} file trước đó (vẫn được giữ lại).`);
+        return;
+    }
 
     // Auto push to Lark Base if checked
     if ($("chkAutoPushLark") && $("chkAutoPushLark").checked) {

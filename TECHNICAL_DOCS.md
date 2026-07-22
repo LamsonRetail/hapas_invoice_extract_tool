@@ -497,6 +497,18 @@ Vì bạn muốn chạy nhiều tools trên cùng server, phương án dùng Doc
 
 ## 10. Nhật ký cập nhật (Changelog)
 
+### [2026-07-22] Đẩy file hóa đơn thành Attachment & Khôi phục CI/CD Deploy
+**Đã xử lý (Thành công):**
+- **Đẩy file hóa đơn thật sang Base (Attachment):** Cột "Hóa đơn" trước đây chỉ ghi tên file dạng text. Nay tool upload chính file đã bóc tách lên Lark Drive (`upload_media` → `/open-apis/drive/v1/medias/upload_all`, `parent_type=bitable_file`) để lấy `file_token`, rồi ghi vào trường dạng Attachment (`[{"file_token": ...}]`).
+- **Giữ file phía server + `file_id`:** `/api/upload` giữ lại file trên server với `file_id` duy nhất (dict `uploaded_files`) và trả về trong kết quả, để bước push lên Base tìm lại đúng file gốc. Có dọn file (cleanup) sau khi push thành công và khi lỗi.
+- **Tự động chuyển kiểu cột sang Attachment (type 17):** Nếu cột "Hóa đơn" đang là Text (type 1), tool tự gọi `update_field` (PUT `.../fields/{field_id}`, type 17) để chuyển sang Attachment — người dùng không cần xóa/tạo lại cột thủ công.
+- **Sửa lỗi `batch_create_records` che giấu lỗi:** Bỏ nhánh fallback tự tách từng record khi batch lỗi (nhánh này dùng lại `file_token` — vốn chỉ dùng một lần — và nuốt lỗi thật của Lark). Nay hàm raise thẳng mã lỗi + message của Lark để dễ chẩn đoán. Đây là nguyên nhân của lỗi "Unexpected token 'I', Internal S..." (server trả 500 HTML, frontend `.json()` fail).
+- **Khôi phục CI/CD Deploy (GitHub Actions):** Deploy tự động fail từ ~2026-06-23 với lỗi `ssh: handshake failed ... [none publickey]`. Nguyên nhân gốc: file `~/.ssh/authorized_keys` trên GC VM bị thiếu (public key chưa được nạp). Đã sửa: tạo key ed25519 mới (`~/.ssh/github_deploy`), append `.pub` vào `authorized_keys`, cập nhật secret `SSH_HOST=34.126.154.135`, `SSH_USERNAME=thienquy_work1`, `SSH_PRIVATE_KEY`. Deploy #11 chạy thành công, app live tại `http://34.126.154.135:8080/`.
+
+**Chưa xử lý (Cần thực hiện):**
+- **Xoay (rotate) SSH deploy key:** Private key đã hiển thị trên màn hình khi cấu hình — nên tạo key mới thay thế để đảm bảo an toàn.
+- **Gán static IP cho GC VM:** VM đang dùng ephemeral external IP — mỗi lần tắt/bật VM sẽ đổi IP làm hỏng deploy (phải cập nhật lại `SSH_HOST`). Nên gán static IP để tránh.
+
 ### [2026-06-24] Cập nhật định dạng Excel & Khắc phục Deploy
 **Đã xử lý (Thành công):**
 - **Cập nhật Định dạng Xuất Excel:** Thay đổi các cột trong báo cáo Excel từ format cũ sang định dạng mới hiển thị đầy đủ **Người Bán** và **Người Mua** khớp với giao diện Web.

@@ -96,7 +96,7 @@ class AIExtractor:
             if "gpt-4" in self.model.lower() or "gpt-3.5" in self.model.lower():
                 api_kwargs["response_format"] = {"type": "json_object"}
 
-            max_retries = 3
+            max_retries = 5
             last_error = None
 
             for attempt in range(max_retries):
@@ -110,8 +110,16 @@ class AIExtractor:
                 except Exception as e:
                     last_error = e
                     error_str = str(e).lower()
-                    # Tự động thử lại nếu server báo lỗi quá tải (503, 502, 429)
-                    if "503" in error_str or "502" in error_str or "429" in error_str or "rate limit" in error_str or "high demand" in error_str:
+                    is_quota = "429" in error_str or "quota" in error_str or "rate limit" in error_str
+                    is_overload = "503" in error_str or "502" in error_str or "high demand" in error_str
+                    if is_quota:
+                        # 429 = giới hạn theo phút (RPM/TPM), KHÔNG phải hết tiền/credit.
+                        # Cần đợi lâu hơn để qua cửa sổ 1 phút: 5s, 10s, 20s, 40s, 60s (cap).
+                        if attempt < max_retries - 1:
+                            time.sleep(min(60, 5 * (2 ** attempt)))
+                            continue
+                        break
+                    elif is_overload:
                         time.sleep(2 ** attempt)  # Đợi 1s, 2s, 4s...
                         continue
                     else:

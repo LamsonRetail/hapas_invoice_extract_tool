@@ -113,6 +113,12 @@ body {
 }
 .btn-secondary:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 
+.btn-danger {
+    background: var(--danger-bg); color: var(--danger);
+    border: 1px solid var(--danger);
+}
+.btn-danger:not(:disabled):hover { background: var(--danger); color: white; }
+
 .btn-sm { padding: 6px 14px; font-size: 0.78rem; }
 
 /* ===== Loading & Error ===== */
