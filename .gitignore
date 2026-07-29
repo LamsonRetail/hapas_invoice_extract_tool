@@ -13,3 +13,7 @@ uploads/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Logs and archives
+app.log
+*.zip
