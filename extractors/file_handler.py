@@ -53,11 +53,14 @@ class FileHandler:
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     @staticmethod
-    def pdf_to_images(filepath: str, max_size: int = 2000) -> List[str]:
-        """Chuyển từng trang PDF thành ảnh base64."""
+    def pdf_to_images(filepath: str, max_size: int = 2000, max_pages: int = None) -> List[str]:
+        """Chuyển từng trang PDF thành ảnh base64. max_pages: giới hạn số trang đầu (None = tất cả)."""
         images = []
         doc = fitz.open(filepath)
-        for page_num in range(len(doc)):
+        total_pages = len(doc)
+        if max_pages is not None:
+            total_pages = min(total_pages, max_pages)
+        for page_num in range(total_pages):
             page = doc[page_num]
             # Render at 200 DPI for good quality
             mat = fitz.Matrix(200 / 72, 200 / 72)
@@ -114,29 +117,38 @@ class FileHandler:
         return "\n".join(lines)
 
     @staticmethod
-    def process_file(filepath: str) -> List[Dict[str, Any]]:
+    def process_file(filepath: str, first_page_only: bool = False) -> List[Dict[str, Any]]:
         """
         Xử lý file và trả về danh sách content blocks.
+
+        Args:
+            first_page_only: Nếu True, chỉ đọc TRANG ĐẦU (PDF) / phần đầu (Word/Excel).
+                Dùng cho bước bóc nhanh mã số chứng từ (số HĐ/BBNT/PLHĐ).
 
         Returns:
             List of dicts: [{"type": "image"|"text", "content": base64_string|text_string}]
         """
         file_type = FileHandler.get_file_type(filepath)
+        FIRST_PAGE_TEXT_LIMIT = 4000  # ký tự đầu cho file text khi chỉ đọc trang đầu
 
         if file_type == "image":
             b64 = FileHandler.image_to_base64(filepath)
             return [{"type": "image", "content": b64, "mime_type": "image/jpeg"}]
 
         elif file_type == "pdf":
-            images = FileHandler.pdf_to_images(filepath)
+            images = FileHandler.pdf_to_images(filepath, max_pages=1 if first_page_only else None)
             return [{"type": "image", "content": img, "mime_type": "image/jpeg"} for img in images]
 
         elif file_type == "word":
             text = FileHandler.read_word(filepath)
+            if first_page_only:
+                text = text[:FIRST_PAGE_TEXT_LIMIT]
             return [{"type": "text", "content": text}]
 
         elif file_type == "excel":
             text = FileHandler.read_excel(filepath)
+            if first_page_only:
+                text = text[:FIRST_PAGE_TEXT_LIMIT]
             return [{"type": "text", "content": text}]
 
         else:

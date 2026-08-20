@@ -446,31 +446,60 @@ function populateSettingsForm(s) {
     const detected = detectProvider(s.openai_base_url, s.openai_model);
     $("sApiProvider").value = detected;
     const rf = s.lark_result_fields || {};
+    // Hóa đơn fields
     $("sColVat").value = rf.co_vat || "AI_Có_VAT";
     $("sColTruocThue").value = rf.tien_truoc_thue || "AI_Tiền_Trước_Thuế";
     $("sColTienVat").value = rf.tien_vat || "AI_Tiền_VAT";
+    $("sColSauThue").value = rf.tien_sau_thue || "AI_Tiền_Sau_Thuế";
     $("sColTrangThai").value = rf.trang_thai || "AI_Trạng_Thái";
     $("sColNgayHD").value = rf.ngay_hoa_don || "AI_Ngày_HĐ";
     $("sColSoHD").value = rf.so_hoa_don || "AI_Số_HĐ";
-    $("sColNguoiBan").value = rf.ten_nguoi_ban || "AI_Người_Bán";
-    $("sColNguoiMua").value = rf.ten_nguoi_mua || "AI_Người_Mua";
+    // Hợp đồng / BBNT / Phụ lục fields
+    $("sColMstA").value = rf.mst_a || "AI_MST_A";
+    $("sColMstB").value = rf.mst_b || "AI_MST_B";
+    $("sColSoHopDong").value = rf.so_hop_dong || "AI_Số_Hợp_đồng";
+    $("sColSoLanTT").value = rf.so_lan_tt || "AI_Số_lần_TT";
+    $("sColGiaTriTT").value = rf.gia_tri_tt || "AI_Giá_trị_TT";
+    $("sColTongNet").value = rf.tong_gia_tri_net || "AI_Tổng_giá_trị_net";
+    $("sColTongGross").value = rf.tong_gia_tri_gross || "AI_Tổng_giá_trị_gross";
+    $("sColVatChungTu").value = rf.vat_chung_tu || "AI_VAT_chứng_từ";
+    $("sColPitChungTu").value = rf.pit_chung_tu || "AI_PIT_chứng_từ";
+    $("sColSoBBNT").value = rf.so_bbnt || "AI_Số_BBNT";
+    $("sColSoPLHD").value = rf.so_plhd || "AI_Số_PLHĐ";
 
     if (s.lark_app_token && s.lark_table_id) {
         showResolvedInfo(s.lark_app_token, s.lark_table_id, s.lark_view_id || "");
-        loadFieldsForSelectors(s.lark_app_token, s.lark_table_id, s.lark_attachment_field, s.lark_content_field);
+        loadFieldsForSelectors(
+            s.lark_app_token, s.lark_table_id,
+            s.lark_attachment_field, s.lark_content_field,
+            s.lark_att_field_hop_dong, s.lark_att_field_bbnt,
+            s.lark_att_field_phu_luc, s.lark_doc_type_field
+        );
     }
 }
 
 function getResultFieldsFromForm() {
     return {
+        // Hóa đơn
         co_vat: $("sColVat").value || "AI_Có_VAT",
         tien_truoc_thue: $("sColTruocThue").value || "AI_Tiền_Trước_Thuế",
         tien_vat: $("sColTienVat").value || "AI_Tiền_VAT",
+        tien_sau_thue: $("sColSauThue").value || "AI_Tiền_Sau_Thuế",
         trang_thai: $("sColTrangThai").value || "AI_Trạng_Thái",
         ngay_hoa_don: $("sColNgayHD").value || "AI_Ngày_HĐ",
         so_hoa_don: $("sColSoHD").value || "AI_Số_HĐ",
-        ten_nguoi_ban: $("sColNguoiBan").value || "AI_Người_Bán",
-        ten_nguoi_mua: $("sColNguoiMua").value || "AI_Người_Mua",
+        // Hợp đồng / BBNT / Phụ lục
+        mst_a: $("sColMstA").value || "AI_MST_A",
+        mst_b: $("sColMstB").value || "AI_MST_B",
+        so_hop_dong: $("sColSoHopDong").value || "AI_Số_Hợp_đồng",
+        so_lan_tt: $("sColSoLanTT").value || "AI_Số_lần_TT",
+        gia_tri_tt: $("sColGiaTriTT").value || "AI_Giá_trị_TT",
+        tong_gia_tri_net: $("sColTongNet").value || "AI_Tổng_giá_trị_net",
+        tong_gia_tri_gross: $("sColTongGross").value || "AI_Tổng_giá_trị_gross",
+        vat_chung_tu: $("sColVatChungTu").value || "AI_VAT_chứng_từ",
+        pit_chung_tu: $("sColPitChungTu").value || "AI_PIT_chứng_từ",
+        so_bbnt: $("sColSoBBNT").value || "AI_Số_BBNT",
+        so_plhd: $("sColSoPLHD").value || "AI_Số_PLHĐ",
     };
 }
 
@@ -511,24 +540,30 @@ function showResolvedInfo(appToken, tableId, viewId) {
     $("infoViewId").textContent = viewId || "(default)";
 }
 
-async function loadFieldsForSelectors(appToken, tableId, selectedAtt = "", selectedContent = "") {
+async function loadFieldsForSelectors(appToken, tableId, selectedAtt = "", selectedContent = "", selectedHopDong = "", selectedBBNT = "", selectedPhuLuc = "", selectedDocType = "") {
     $("fieldSelectors").style.display = "none";
     try {
         const res = await fetch(`/api/lark/fields?app_token=${encodeURIComponent(appToken)}&table_id=${encodeURIComponent(tableId)}`);
         if (!res.ok) return;
         const data = await res.json();
         const fields = data.fields || [];
-        const attSel = $("sAttField");
-        const contentSel = $("sContentField");
-        attSel.innerHTML = '<option value="">-- Chọn cột --</option>';
-        contentSel.innerHTML = '<option value="">-- Chọn cột --</option>';
-        fields.forEach(f => {
-            const opt1 = new Option(f.name, f.name);
-            const opt2 = new Option(f.name, f.name);
-            if (f.name === selectedAtt) opt1.selected = true;
-            if (f.name === selectedContent) opt2.selected = true;
-            attSel.appendChild(opt1);
-            contentSel.appendChild(opt2);
+        const selectors = [
+            { id: "sAttField", selected: selectedAtt },
+            { id: "sAttFieldHopDong", selected: selectedHopDong },
+            { id: "sAttFieldBBNT", selected: selectedBBNT },
+            { id: "sAttFieldPhuLuc", selected: selectedPhuLuc },
+            { id: "sContentField", selected: selectedContent },
+            { id: "sDocTypeField", selected: selectedDocType },
+        ];
+        selectors.forEach(({ id, selected }) => {
+            const sel = $(id);
+            if (!sel) return;
+            sel.innerHTML = '<option value="">-- Chọn cột --</option>';
+            fields.forEach(f => {
+                const opt = new Option(f.name, f.name);
+                if (f.name === selected) opt.selected = true;
+                sel.appendChild(opt);
+            });
         });
         $("fieldSelectors").style.display = "grid";
     } catch (e) {
@@ -579,6 +614,10 @@ async function saveSettingsForm() {
         lark_view_id: currentSettings.lark_view_id || "",
         lark_attachment_field: $("sAttField").value,
         lark_content_field: $("sContentField").value,
+        lark_att_field_hop_dong: $("sAttFieldHopDong") ? $("sAttFieldHopDong").value : "",
+        lark_att_field_bbnt: $("sAttFieldBBNT") ? $("sAttFieldBBNT").value : "",
+        lark_att_field_phu_luc: $("sAttFieldPhuLuc") ? $("sAttFieldPhuLuc").value : "",
+        lark_doc_type_field: $("sDocTypeField") ? $("sDocTypeField").value : "",
         lark_result_fields: getResultFieldsFromForm(),
     };
     if (currentSettings.lark_base_url) data.lark_base_url = currentSettings.lark_base_url;

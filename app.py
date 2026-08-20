@@ -10,8 +10,12 @@ import asyncio
 import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import sys
 from urllib.parse import urlparse, parse_qs
 
+# Fix Unicode print errors on Windows
+if sys.platform.startswith('win'):
+    sys.stdout.reconfigure(encoding='utf-8')
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,15 +33,125 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 DEFAULT_RESULT_FIELDS = {
+    # Hóa đơn
     "co_vat": "AI_Có_VAT",
     "tien_truoc_thue": "AI_Tiền_Trước_Thuế",
     "tien_vat": "AI_Tiền_VAT",
+    "tien_sau_thue": "AI_Tiền_Sau_Thuế",
     "trang_thai": "AI_Trạng_Thái",
     "ngay_hoa_don": "AI_Ngày_HĐ",
     "so_hoa_don": "AI_Số_HĐ",
-    "ten_nguoi_ban": "AI_Người_Bán",
-    "ten_nguoi_mua": "AI_Người_Mua",
+    "mst_a": "AI_MST_A",
+    "mst_b": "AI_MST_B",
+    # Hợp đồng / BBNT / Phụ lục hợp đồng
+    "so_hop_dong": "AI_Số_Hợp_đồng",
+    "so_lan_tt": "AI_Số_lần_TT",
+    "gia_tri_tt": "AI_Giá_trị_TT",
+    "tong_gia_tri_net": "AI_Tổng_giá_trị_net",
+    "tong_gia_tri_gross": "AI_Tổng_giá_trị_gross",
+    "vat_chung_tu": "AI_VAT_chứng_từ",
+    "pit_chung_tu": "AI_PIT_chứng_từ",
+    "so_bbnt": "AI_Số_BBNT",
+    "so_plhd": "AI_Số_PLHĐ",
 }
+
+# Lark field type constants
+LARK_FIELD_NUMBER = 2
+
+
+def _coerce_number(val):
+    """Chuyển 1 giá trị (str/số) về số (int/float) để ghi vào field kiểu Number của Lark.
+    Trả về None nếu không parse được (khi đó bỏ qua field, tránh làm hỏng cả update)."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    s = str(val).strip()
+    if not s:
+        return None
+    # Chỉ giữ số, dấu phân cách và dấu âm
+    s = re.sub(r"[^0-9.,\-]", "", s)
+    if not s or s in ("-", ".", ","):
+        return None
+    if "," in s and "." in s:
+        # Nếu dấu phẩy đứng sau -> phẩy là thập phân (định dạng VN): bỏ chấm, đổi phẩy thành chấm
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:  # định dạng EN: phẩy là ngăn cách nghìn
+            s = s.replace(",", "")
+    elif "," in s:
+        parts = s.split(",")
+        if len(parts) == 2 and len(parts[1]) != 3:
+            s = s.replace(",", ".")  # phẩy thập phân
+        else:
+            s = s.replace(",", "")  # phẩy ngăn cách nghìn
+    if s.count(".") > 1:  # nhiều dấu chấm -> ngăn cách nghìn
+        s = s.replace(".", "")
+    try:
+        f = float(s)
+        return int(f) if f.is_integer() else f
+    except (ValueError, TypeError):
+        return None
+
+
+def _format_money_str(val):
+    """Định dạng (các) giá trị tiền thành SỐ NGUYÊN dạng chuỗi (không phần thập phân).
+    Hỗ trợ nhiều hóa đơn: mỗi giá trị ngăn cách bằng ',' (ví dụ '1837032,2500000').
+    - Số 1837032.0 -> '1837032'
+    - Chuỗi '10000000,20000000' -> '10000000,20000000'
+    Trả về None nếu rỗng/không có giá trị."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return str(int(round(val)))
+    s = str(val).strip()
+    if not s:
+        return None
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if not parts:
+        return None
+    out = []
+    for p in parts:
+        num = _coerce_number(p)
+        out.append(str(int(round(num))) if num is not None else p)
+    return ",".join(out)
+
+
+def _field(result_fields_config: dict, key: str, default: str) -> str:
+    """Lấy tên field Lark theo key cấu hình, fallback về mặc định."""
+    return result_fields_config.get(key, default)
+
+
+def _pick_money(raw_val, computed_val):
+    """Chọn giá trị tiền để ghi.
+    - Nếu raw là chuỗi nhiều hóa đơn (có dấu ','), dùng raw (computed đã bị gộp sai với nhiều HĐ).
+    - Ngược lại ưu tiên giá trị computed (đã validate/ tính ngược), fallback về raw."""
+    if raw_val is not None and "," in str(raw_val):
+        return raw_val
+    if computed_val is not None:
+        return computed_val
+    return raw_val
+
+
+def _sanitize_fields_for_lark(update_fields: dict, field_type_map: dict) -> tuple:
+    """Ép kiểu các giá trị theo kiểu field thực tế của Lark.
+    - Field kiểu Number (type 2): chuyển giá trị về số; nếu không parse được thì bỏ field đó.
+    Trả về (clean_fields, dropped) với dropped là danh sách field bị bỏ do không ép kiểu được."""
+    clean = {}
+    dropped = []
+    for name, value in update_fields.items():
+        ftype = field_type_map.get(name)
+        if ftype == LARK_FIELD_NUMBER:
+            num = _coerce_number(value)
+            if num is None:
+                dropped.append(name)
+                continue
+            clean[name] = num
+        else:
+            clean[name] = value
+    return clean, dropped
 
 
 def load_config() -> dict:
@@ -168,6 +282,11 @@ async def get_settings():
         "lark_view_id": cfg.get("lark_view_id", ""),
         "lark_attachment_field": cfg.get("lark_attachment_field", ""),
         "lark_content_field": cfg.get("lark_content_field", ""),
+        # New: attachment fields for contract document types
+        "lark_att_field_hop_dong": cfg.get("lark_att_field_hop_dong", ""),
+        "lark_att_field_bbnt": cfg.get("lark_att_field_bbnt", ""),
+        "lark_att_field_phu_luc": cfg.get("lark_att_field_phu_luc", ""),
+        "lark_doc_type_field": cfg.get("lark_doc_type_field", ""),
         "lark_result_fields": {**DEFAULT_RESULT_FIELDS, **cfg.get("lark_result_fields", {})},
         "lark_table_url": cfg.get("lark_table_url", ""),
         "lark_upload_url": cfg.get("lark_upload_url", "https://o4pvcegwn6b.sg.larksuite.com/base/Eaiabgix8a7mwqs63molRe6UgYf?table=tblYjTMstZfy1Ua6&view=vewViuZElT"),
@@ -185,6 +304,8 @@ async def save_settings(data: dict):
         "openai_api_key", "openai_model", "openai_base_url",
         "lark_app_token", "lark_table_id", "lark_view_id",
         "lark_attachment_field", "lark_content_field",
+        "lark_att_field_hop_dong", "lark_att_field_bbnt",
+        "lark_att_field_phu_luc", "lark_doc_type_field",
         "lark_result_fields", "lark_table_url", "lark_upload_url", "lark_filters",
     ]
     for key in allowed:
@@ -243,7 +364,7 @@ async def get_lark_fields(app_token: str, table_id: str):
 @app.post("/api/lark/setup-columns")
 async def setup_result_columns(data: dict):
     """
-    Auto-create the 4 result columns if they don't already exist.
+    Auto-create the result columns if they don't already exist.
     Returns the final field map.
     """
     app_token = data.get("app_token", "")
@@ -259,18 +380,33 @@ async def setup_result_columns(data: dict):
         existing_names = {f["field_name"]: f for f in existing}
 
         # field_type: 1=Text, 2=Number
+        # Hóa đơn fields
         field_types = {
             result_fields.get("co_vat", "AI_Có_VAT"): 1,
-            result_fields.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế"): 2,
-            result_fields.get("tien_vat", "AI_Tiền_VAT"): 2,
+            result_fields.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế"): 1,  # Text to support multiple values (e.g., 1000,2000)
+            result_fields.get("tien_vat", "AI_Tiền_VAT"): 1,  # Text to support multiple values
             result_fields.get("trang_thai", "AI_Trạng_Thái"): 1,
             result_fields.get("ngay_hoa_don", "AI_Ngày_HĐ"): 1,
             result_fields.get("so_hoa_don", "AI_Số_HĐ"): 1,
+            result_fields.get("mst_a", "AI_MST_A"): 1,
+            result_fields.get("mst_b", "AI_MST_B"): 1,
+            # Hợp đồng / BBNT / Phụ lục fields
+            result_fields.get("so_hop_dong", "AI_Số_Hợp_đồng"): 1,
+            result_fields.get("so_lan_tt", "AI_Số_lần_TT"): 2,
+            result_fields.get("gia_tri_tt", "AI_Giá_trị_TT"): 1,
+            result_fields.get("tong_gia_tri_net", "AI_Tổng_giá_trị_net"): 2,
+            result_fields.get("tong_gia_tri_gross", "AI_Tổng_giá_trị_gross"): 2,
+            result_fields.get("vat_chung_tu", "AI_VAT_chứng_từ"): 1,
+            result_fields.get("pit_chung_tu", "AI_PIT_chứng_từ"): 1,
+            result_fields.get("so_bbnt", "AI_Số_BBNT"): 1,
+            result_fields.get("so_plhd", "AI_Số_PLHĐ"): 1,
         }
 
         created = []
         already_existed = []
         for field_name, field_type in field_types.items():
+            if not field_name:
+                continue
             if field_name in existing_names:
                 already_existed.append(field_name)
             else:
@@ -305,6 +441,7 @@ async def get_lark_records(
         attachment_field = cfg.get("lark_attachment_field", "Tệp đính kèm")
         content_field = cfg.get("lark_content_field", "Text")
         result_fields = cfg.get("lark_result_fields", DEFAULT_RESULT_FIELDS)
+        doc_type_field = cfg.get("lark_doc_type_field", "")
 
         records, next_token, total = lark.list_records(
             app_token=_app_token,
@@ -319,11 +456,23 @@ async def get_lark_records(
             fields = rec.get("fields", {})
             record_id = rec.get("record_id", "")
 
-            # Attachments
+            # Attachments (invoice)
             attachments = fields.get(attachment_field, [])
             att_names = []
             if isinstance(attachments, list):
                 att_names = [a.get("name", "file") for a in attachments if isinstance(a, dict)]
+
+            # Also check other document type fields for attachments
+            att_field_hop_dong = cfg.get("lark_att_field_hop_dong", "")
+            att_field_bbnt = cfg.get("lark_att_field_bbnt", "")
+            att_field_phu_luc = cfg.get("lark_att_field_phu_luc", "")
+
+            for extra_field in [att_field_hop_dong, att_field_bbnt, att_field_phu_luc]:
+                if extra_field and extra_field in fields:
+                    extra_atts = fields.get(extra_field, [])
+                    if isinstance(extra_atts, list):
+                        extra_names = [a.get("name", "file") for a in extra_atts if isinstance(a, dict)]
+                        att_names.extend(extra_names)
 
             # Result fields (if already processed)
             co_vat = _extract_text_field(fields, result_fields.get("co_vat", "AI_Có_VAT"))
@@ -334,9 +483,14 @@ async def get_lark_records(
             # Content field
             noi_dung = _extract_text_field(fields, content_field)
 
+            # Doc type field value (e.g. "Hóa đơn", "Hợp đồng", "BBNT", "Phụ lục hợp đồng")
+            loai_chung_tu = ""
+            if doc_type_field:
+                loai_chung_tu = _extract_text_field(fields, doc_type_field)
+
             # Amount field (smart detect)
             so_tien = None
-            for key in ["Số tiền ~ Số tiền", "Số tiền", "SỐ TIỀN", "Amount"]:
+            for key in ["Số tiền ~ Số tiền", "Số tiền", "Số TIỀN", "Amount"]:
                 if key in fields:
                     so_tien = fields[key]
                     break
@@ -356,6 +510,7 @@ async def get_lark_records(
                 "tien_truoc_thue": tien_truoc_thue,
                 "tien_vat": tien_vat,
                 "trang_thai": trang_thai,
+                "loai_chung_tu": loai_chung_tu,
                 "is_processed": bool(trang_thai),
             })
 
@@ -405,6 +560,10 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
     app_token = cfg.get("lark_app_token", "")
     table_id = cfg.get("lark_table_id", "")
     attachment_field = cfg.get("lark_attachment_field", "Tệp đính kèm")
+    att_field_hop_dong = cfg.get("lark_att_field_hop_dong", "")
+    att_field_bbnt = cfg.get("lark_att_field_bbnt", "")
+    att_field_phu_luc = cfg.get("lark_att_field_phu_luc", "")
+    doc_type_field = cfg.get("lark_doc_type_field", "")
     result_fields_config = {**DEFAULT_RESULT_FIELDS, **cfg.get("lark_result_fields", {})}
     content_field = cfg.get("lark_content_field", "Text")
 
@@ -416,16 +575,16 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
     loop = asyncio.get_event_loop()
     print(f"  -> Init done. app_token={app_token} table_id={table_id}", flush=True)
 
-    # Fetch attachment field_id (required for Bitable file download)
-    att_field_id = None
+    # Fetch all field IDs (required for Bitable file download)
+    att_field_id_map: Dict[str, Optional[str]] = {}
+    field_type_map: Dict[str, Optional[int]] = {}
     print(f"  -> Fetching fields...", flush=True)
     try:
         fields_list = await loop.run_in_executor(None, lark.list_fields, app_token, table_id)
         for f in fields_list:
-            if f["field_name"] == attachment_field:
-                att_field_id = f["field_id"]
-                break
-        print(f"  -> Fetched fields. att_field_id={att_field_id}", flush=True)
+            att_field_id_map[f["field_name"]] = f["field_id"]
+            field_type_map[f["field_name"]] = f.get("type")
+        print(f"  -> Fetched {len(fields_list)} fields.", flush=True)
     except Exception as e:
         print(f"  -> Warning: Could not fetch field_id: {e}", flush=True)
 
@@ -446,150 +605,329 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
             continue
 
         fields = rec.get("fields", {})
-        attachments = fields.get(attachment_field, [])
         noi_dung = _extract_text_field(fields, content_field)
         tasks[task_id]["current_record"] = noi_dung[:50] or record_id
 
-        if not attachments or not isinstance(attachments, list):
-            print(f"  -> No attachments. Skipping.", flush=True)
-            update_fields = {
-                result_fields_config.get("co_vat", "AI_Có_VAT"): "Không có đính kèm",
-                result_fields_config.get("trang_thai", "AI_Trạng_Thái"): "Bỏ qua - không có file",
-            }
+        # Determine doc type from the designated column
+        loai_chung_tu = ""
+        if doc_type_field:
+            loai_chung_tu = _extract_text_field(fields, doc_type_field).strip()
+        print(f"  -> Loại chứng từ: '{loai_chung_tu}'", flush=True)
+
+        # Map doc type to attachment field name and display name
+        CONTRACT_DOC_TYPES = {
+            "Hợp đồng": (att_field_hop_dong, "Hợp đồng"),
+            "BBNT": (att_field_bbnt, "BBNT"),
+            "Phụ lục hợp đồng": (att_field_phu_luc, "Phụ lục hợp đồng"),
+        }
+
+        update_fields = {}
+        result_entry = {
+            "record_id": record_id,
+            "noi_dung": noi_dung,
+        }
+
+        # ---- Process Invoice (Hóa đơn) - always if has attachment ----
+        invoice_attachments = fields.get(attachment_field, [])
+        should_process_invoice = isinstance(invoice_attachments, list) and len(invoice_attachments) > 0
+
+        if should_process_invoice:
+            print(f"  -> Processing Hóa đơn attachment(s)...", flush=True)
             try:
-                await loop.run_in_executor(None, lark.update_record, app_token, table_id, record_id, update_fields)
+                all_content_blocks = []
+                att_filenames = []
+                att_field_id = att_field_id_map.get(attachment_field)
+
+                for att in invoice_attachments:
+                    if not isinstance(att, dict): continue
+                    file_token = att.get("file_token", "")
+                    att_name = att.get("name", "file")
+                    att_filenames.append(att_name)
+                    if not file_token: continue
+
+                    print(f"  -> Downloading invoice: {att_name} ({file_token})", flush=True)
+                    tmp_path = await loop.run_in_executor(
+                        None, lark.save_attachment_temp,
+                        file_token, att_name, app_token, table_id, att_field_id, record_id
+                    )
+                    try:
+                        content_blocks = FileHandler.process_file(tmp_path)
+                        all_content_blocks.extend(content_blocks)
+                    finally:
+                        try: os.unlink(tmp_path)
+                        except: pass
+
+                if all_content_blocks:
+                    raw_result = await loop.run_in_executor(
+                        None, extractor.extract_invoice, all_content_blocks, ", ".join(att_filenames)
+                    )
+                    processed = calculator.process(raw_result)
+                    co_vat = processed.get("co_vat", False)
+
+                    f_truoc = _field(result_fields_config, "tien_truoc_thue", "AI_Tiền_Trước_Thuế")
+                    f_vat = _field(result_fields_config, "tien_vat", "AI_Tiền_VAT")
+                    f_sau = result_fields_config.get("tien_sau_thue")
+
+                    if co_vat:
+                        update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Có"
+                        # Tiền trước thuế / VAT / sau thuế -> số nguyên, nhiều HĐ ngăn cách ','
+                        v_truoc = _format_money_str(_pick_money(
+                            raw_result.get("tong_tien_truoc_thue"), processed.get("tong_tien_truoc_thue_computed")))
+                        v_vat = _format_money_str(_pick_money(
+                            raw_result.get("tien_vat"), processed.get("tien_vat_computed")))
+                        v_sau = _format_money_str(_pick_money(
+                            raw_result.get("tong_thanh_toan"), processed.get("tong_thanh_toan_computed")))
+                        if v_truoc is not None:
+                            update_fields[f_truoc] = v_truoc
+                        if v_vat is not None:
+                            update_fields[f_vat] = v_vat
+                        if v_sau is not None and f_sau:
+                            update_fields[f_sau] = v_sau
+                    else:
+                        update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Không"
+                        # Không VAT: trước thuế = sau thuế = tổng thanh toán
+                        v_tong = _format_money_str(_pick_money(
+                            raw_result.get("tong_thanh_toan"), processed.get("tong_thanh_toan_computed")))
+                        if v_tong is not None:
+                            update_fields[f_truoc] = v_tong
+                            if f_sau:
+                                update_fields[f_sau] = v_tong
+
+                    status_text = processed.get("trang_thai", "OK")
+                    notes = []
+                    if processed.get("canh_bao"): notes.append(processed["canh_bao"])
+                    if processed.get("ghi_chu"): notes.append(processed["ghi_chu"])
+                    if notes: status_text += f" | {'; '.join(notes)}"
+                    update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = status_text[:500]
+
+                    ngay_hoa_don = raw_result.get("ngay_hoa_don")
+                    so_hoa_don = raw_result.get("so_hoa_don")
+                    mst_a = raw_result.get("ma_so_thue_nguoi_ban") or raw_result.get("ma_so_thue")
+                    mst_b = raw_result.get("ma_so_thue_nguoi_mua")
+                    if ngay_hoa_don and result_fields_config.get("ngay_hoa_don"):
+                        update_fields[result_fields_config["ngay_hoa_don"]] = str(ngay_hoa_don)
+                    if so_hoa_don and result_fields_config.get("so_hoa_don"):
+                        update_fields[result_fields_config["so_hoa_don"]] = str(so_hoa_don)
+                    if mst_a and result_fields_config.get("mst_a"):
+                        update_fields[result_fields_config["mst_a"]] = str(mst_a)
+                    if mst_b and result_fields_config.get("mst_b"):
+                        update_fields[result_fields_config["mst_b"]] = str(mst_b)
+
+                    result_entry.update({
+                        "co_vat": co_vat,
+                        "so_hoa_don": raw_result.get("so_hoa_don"),
+                        "ngay_hoa_don": raw_result.get("ngay_hoa_don"),
+                        "mst_a": mst_a,
+                        "mst_b": mst_b,
+                        "tien_truoc_thue": processed.get("tong_tien_truoc_thue_computed"),
+                        "tien_vat": processed.get("tien_vat_computed"),
+                        "tong_thanh_toan": processed.get("tong_thanh_toan_computed"),
+                    })
+                    print(f"  -> Invoice processed OK.", flush=True)
+
             except Exception as e:
-                print(f"  -> Error updating record: {e}", flush=True)
+                traceback.print_exc()
+                print(f"  -> Invoice ERROR: {str(e)}", flush=True)
+                update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = f"LỖI HĐ: {str(e)[:200]}"
+                result_entry["error"] = str(e)
 
-            tasks[task_id]["results"].append({
-                "record_id": record_id,
-                "noi_dung": noi_dung,
-                "trang_thai": "Bỏ qua",
-            })
-            tasks[task_id]["processed"] = i + 1
-            continue
+        elif loai_chung_tu == "Hóa đơn" and not (isinstance(invoice_attachments, list) and len(invoice_attachments) > 0):
+            # Marked as Hóa đơn but no file
+            update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = "Bỏ qua - không có file hóa đơn"
 
-        try:
-            all_content_blocks = []
-            att_filenames = []
+        # ---- Xử lý chứng từ Hợp đồng / BBNT / Phụ lục (2 BƯỚC) ----
+        lct_lower = loai_chung_tu.lower()
+        tt_field = result_fields_config.get("trang_thai", "AI_Trạng_Thái")
+        contract_specs = [
+            # (c_key, attachment_field, doc_type, so_key, is_amount_source)
+            ("Hợp đồng", att_field_hop_dong, "Hợp đồng", "so_hop_dong",
+             ("hợp đồng" in lct_lower and "phụ lục" not in lct_lower)),
+            ("BBNT", att_field_bbnt, "BBNT", "so_bbnt",
+             ("bbnt" in lct_lower or "nghiệm thu" in lct_lower)),
+            ("Phụ lục hợp đồng", att_field_phu_luc, "Phụ lục hợp đồng", "so_plhd",
+             ("plhđ" in lct_lower or "phụ lục" in lct_lower)),
+        ]
 
-            for att in attachments:
-                if not isinstance(att, dict):
+        # BƯỚC 1 (BẮT BUỘC): đọc TRANG ĐẦU của cả 3 cột (Hợp đồng / BBNT / Phụ lục)
+        # để lấy đủ mã số (AI_Số_Hợp_đồng, AI_Số_BBNT, AI_Số_PLHĐ) — cột nào có file thì lấy số cột đó.
+        for c_key, contract_att_field, contract_doc_type, so_key, _amt in contract_specs:
+            if not contract_att_field:
+                continue
+            c_atts = fields.get(contract_att_field, [])
+            if not isinstance(c_atts, list) or len(c_atts) == 0:
+                continue
+            print(f"  -> [Bước 1] Đọc số từ {c_key} (trang đầu)...", flush=True)
+            try:
+                first_blocks = []
+                fnames = []
+                field_id = att_field_id_map.get(contract_att_field)
+                for att in c_atts:
+                    if not isinstance(att, dict): continue
+                    ftok = att.get("file_token", "")
+                    fname = att.get("name", "file")
+                    fnames.append(fname)
+                    if not ftok: continue
+                    tmp_path = await loop.run_in_executor(
+                        None, lark.save_attachment_temp,
+                        ftok, fname, app_token, table_id, field_id, record_id
+                    )
+                    try:
+                        first_blocks.extend(FileHandler.process_file(tmp_path, first_page_only=True))
+                    finally:
+                        try: os.unlink(tmp_path)
+                        except: pass
+                if not first_blocks:
                     continue
-                file_token = att.get("file_token", "")
-                att_name = att.get("name", "file")
-                att_filenames.append(att_name)
+                num_result = await loop.run_in_executor(
+                    None, extractor.extract_doc_numbers, first_blocks, ", ".join(fnames), contract_doc_type
+                )
+                so_val = num_result.get(so_key)
+                if so_val and result_fields_config.get(so_key):
+                    update_fields[result_fields_config[so_key]] = str(so_val)
+                    print(f"  -> [Bước 1] {c_key} số = {so_val}", flush=True)
+            except Exception as e:
+                print(f"  -> [Bước 1] Lỗi đọc số {c_key}: {e}", flush=True)
 
-                if not file_token:
-                    continue
+        # BƯỚC 2: chỉ đọc ĐẦY ĐỦ đúng loại chứng từ đang hiển thị ở cột "Loại chứng từ có chứa giá trị số tiền"
+        # để lấy các trường giá trị (Số lần TT, Giá trị TT, Tổng net/gross, VAT, PIT, MST).
+        for c_key, contract_att_field, contract_doc_type, so_key, is_amount_source in contract_specs:
+            if not is_amount_source or not contract_att_field:
+                continue
+            contract_attachments = fields.get(contract_att_field, [])
+            if not isinstance(contract_attachments, list) or len(contract_attachments) == 0:
+                continue
 
-                print(f"  -> Downloading: {att_name} ({file_token})", flush=True)
-                tmp_path = await loop.run_in_executor(
-                    None, lark.save_attachment_temp,
-                    file_token, att_name,
-                    app_token, table_id, att_field_id, record_id
+            print(f"  -> [Bước 2] Xử lý chi tiết {c_key}...", flush=True)
+            try:
+                all_content_blocks = []
+                att_filenames = []
+                contract_field_id = att_field_id_map.get(contract_att_field)
+
+                for att in contract_attachments:
+                    if not isinstance(att, dict): continue
+                    file_token = att.get("file_token", "")
+                    att_name = att.get("name", "file")
+                    att_filenames.append(att_name)
+                    if not file_token: continue
+
+                    print(f"  -> Downloading {c_key}: {att_name} ({file_token})", flush=True)
+                    tmp_path = await loop.run_in_executor(
+                        None, lark.save_attachment_temp,
+                        file_token, att_name, app_token, table_id, contract_field_id, record_id
+                    )
+                    try:
+                        content_blocks = FileHandler.process_file(tmp_path)
+                        all_content_blocks.extend(content_blocks)
+                    finally:
+                        try: os.unlink(tmp_path)
+                        except: pass
+
+                if not all_content_blocks:
+                    raise Exception(f"Không thể đọc file {c_key} đính kèm")
+
+                contract_result = await loop.run_in_executor(
+                    None, extractor.extract_contract,
+                    all_content_blocks, ", ".join(att_filenames), contract_doc_type
                 )
 
-                try:
-                    print(f"  -> Processing file...", flush=True)
-                    content_blocks = FileHandler.process_file(tmp_path)
-                    all_content_blocks.extend(content_blocks)
-                finally:
-                    try:
-                        os.unlink(tmp_path)
-                    except:
-                        pass
+                mst_a = contract_result.get("mst_a")
+                mst_b = contract_result.get("mst_b")
 
-            if not all_content_blocks:
-                raise Exception("Không thể đọc file đính kèm")
+                # SỐ: cập nhật lại từ bản đọc đầy đủ (ưu tiên hơn bước 1)
+                so_val = contract_result.get(so_key)
+                if so_val and result_fields_config.get(so_key):
+                    update_fields[result_fields_config[so_key]] = str(so_val)
 
-            print(f"  -> AI Extraction ({len(all_content_blocks)} blocks)...", flush=True)
-            raw_result = await loop.run_in_executor(
-                None, extractor.extract_invoice, all_content_blocks, ", ".join(att_filenames)
-            )
+                # MST của loại chứng từ chứa giá trị
+                if mst_a and result_fields_config.get("mst_a"):
+                    update_fields[result_fields_config["mst_a"]] = str(mst_a)
+                if mst_b and result_fields_config.get("mst_b"):
+                    update_fields[result_fields_config["mst_b"]] = str(mst_b)
 
-            print(f"  -> VAT Calculation...", flush=True)
-            processed = calculator.process(raw_result)
+                # GIÁ TRỊ (số tiền để số nguyên sạch; Giá trị TT hỗ trợ nhiều đợt ngăn cách ',')
+                so_lan_tt = contract_result.get("so_lan_tt")
+                gia_tri_tt = _format_money_str(contract_result.get("gia_tri_tt"))
+                tong_net = contract_result.get("tong_gia_tri_net")
+                tong_gross = contract_result.get("tong_gia_tri_gross")
+                vat_ct = contract_result.get("vat_chung_tu")
+                pit_ct = contract_result.get("pit_chung_tu")
+                if so_lan_tt is not None and result_fields_config.get("so_lan_tt"):
+                    update_fields[result_fields_config["so_lan_tt"]] = str(so_lan_tt)
+                if gia_tri_tt and result_fields_config.get("gia_tri_tt"):
+                    update_fields[result_fields_config["gia_tri_tt"]] = gia_tri_tt
+                if tong_net is not None and result_fields_config.get("tong_gia_tri_net"):
+                    update_fields[result_fields_config["tong_gia_tri_net"]] = str(tong_net)
+                if tong_gross is not None and result_fields_config.get("tong_gia_tri_gross"):
+                    update_fields[result_fields_config["tong_gia_tri_gross"]] = str(tong_gross)
+                if vat_ct and result_fields_config.get("vat_chung_tu"):
+                    update_fields[result_fields_config["vat_chung_tu"]] = str(vat_ct)
+                if pit_ct and result_fields_config.get("pit_chung_tu"):
+                    update_fields[result_fields_config["pit_chung_tu"]] = str(pit_ct)
 
-            print(f"  -> Writing back to Lark...", flush=True)
-            co_vat = processed.get("co_vat", False)
-            update_fields = {}
+                # Status (nối tiếp nếu đã có từ hóa đơn)
+                contract_status = f"OK - {c_key}"
+                if contract_result.get("error"):
+                    contract_status = f"LỖI: {contract_result['error'][:200]}"
+                elif contract_result.get("ghi_chu"):
+                    contract_status += f" | {contract_result['ghi_chu'][:100]}"
 
-            if co_vat:
-                update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Có"
-                tien_truoc_thue = processed.get("tong_tien_truoc_thue_computed")
-                tien_vat = processed.get("tien_vat_computed")
-                if tien_truoc_thue is not None:
-                    update_fields[result_fields_config.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế")] = tien_truoc_thue
-                if tien_vat is not None:
-                    update_fields[result_fields_config.get("tien_vat", "AI_Tiền_VAT")] = tien_vat
-            else:
-                update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Không"
-                tong = processed.get("tong_thanh_toan_computed")
-                if tong is not None:
-                    update_fields[result_fields_config.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế")] = tong
+                existing_status = update_fields.get(tt_field, "")
+                if existing_status and "LỖI" not in existing_status:
+                    update_fields[tt_field] = f"{existing_status}; {contract_status}"[:500]
+                else:
+                    update_fields[tt_field] = contract_status[:500]
 
-            status_text = processed.get("trang_thai", "OK")
-            notes = []
-            if processed.get("canh_bao"):
-                notes.append(processed["canh_bao"])
-            if processed.get("ghi_chu"):
-                notes.append(processed["ghi_chu"])
-            if notes:
-                status_text += f" | {'; '.join(notes)}"
+                result_entry.setdefault("contracts", []).append({
+                    "loai": c_key,
+                    "so": so_val,
+                    "mst_a": mst_a,
+                    "mst_b": mst_b,
+                    "is_amount_source": is_amount_source,
+                })
+                print(f"  -> [Bước 2] {c_key} processed OK.", flush=True)
 
-            update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = status_text[:500]
+            except Exception as e:
+                traceback.print_exc()
+                print(f"  -> {c_key} ERROR: {str(e)}", flush=True)
+                error_msg = f"LỖI {c_key}: {str(e)[:200]}"
+                existing_status = update_fields.get(tt_field, "")
+                if existing_status:
+                    update_fields[tt_field] = f"{existing_status}; {error_msg}"[:500]
+                else:
+                    update_fields[tt_field] = error_msg
+                result_entry["error"] = str(e)
+                result_entry["trang_thai"] = "LỖI"
 
-            # Write date, invoice number, seller, buyer if present
-            ngay_hoa_don = raw_result.get("ngay_hoa_don")
-            so_hoa_don = raw_result.get("so_hoa_don")
-            ten_nguoi_ban = raw_result.get("ten_nguoi_ban") or raw_result.get("ten_nha_cung_cap")
-            ten_nguoi_mua = raw_result.get("ten_nguoi_mua")
-            if ngay_hoa_don and result_fields_config.get("ngay_hoa_don"):
-                update_fields[result_fields_config["ngay_hoa_don"]] = str(ngay_hoa_don)
-            if so_hoa_don and result_fields_config.get("so_hoa_don"):
-                update_fields[result_fields_config["so_hoa_don"]] = str(so_hoa_don)
-            if ten_nguoi_ban and result_fields_config.get("ten_nguoi_ban"):
-                update_fields[result_fields_config["ten_nguoi_ban"]] = str(ten_nguoi_ban)
-            if ten_nguoi_mua and result_fields_config.get("ten_nguoi_mua"):
-                update_fields[result_fields_config["ten_nguoi_mua"]] = str(ten_nguoi_mua)
+        # Skip if no attachment fields have any files
+        if not loai_chung_tu and not update_fields:
+            all_att_names = []
+            for af in [attachment_field, att_field_hop_dong, att_field_bbnt, att_field_phu_luc]:
+                if af and af in fields:
+                    atts = fields.get(af, [])
+                    if isinstance(atts, list) and len(atts) > 0:
+                        all_att_names.extend(atts)
+            if not all_att_names:
+                update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Không có đính kèm"
+                update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = "Bỏ qua - không có file"
 
-            await loop.run_in_executor(None, lark.update_record, app_token, table_id, record_id, update_fields)
-
-            tasks[task_id]["results"].append({
-                "record_id": record_id,
-                "noi_dung": noi_dung,
-                "co_vat": co_vat,
-                "so_hoa_don": raw_result.get("so_hoa_don"),
-                "ngay_hoa_don": raw_result.get("ngay_hoa_don"),
-                "ten_nguoi_ban": raw_result.get("ten_nguoi_ban") or raw_result.get("ten_nha_cung_cap"),
-                "ten_nguoi_mua": raw_result.get("ten_nguoi_mua"),
-                "tien_truoc_thue": processed.get("tong_tien_truoc_thue_computed"),
-                "tien_vat": processed.get("tien_vat_computed"),
-                "tong_thanh_toan": processed.get("tong_thanh_toan_computed"),
-                "trang_thai": processed.get("trang_thai", "OK"),
-            })
-            print(f"  -> Done! Record {record_id} OK.", flush=True)
-
-        except Exception as e:
-            traceback.print_exc()
-            print(f"  -> ERROR: {str(e)}", flush=True)
+        # Write all results back to Lark
+        if update_fields:
+            clean_fields, dropped = _sanitize_fields_for_lark(update_fields, field_type_map)
+            if dropped:
+                print(f"  -> Dropped non-numeric values for Number fields: {dropped}", flush=True)
             try:
-                error_fields = {
-                    result_fields_config.get("trang_thai", "AI_Trạng_Thái"): f"LỖI: {str(e)[:200]}",
-                }
-                await loop.run_in_executor(None, lark.update_record, app_token, table_id, record_id, error_fields)
-            except:
-                pass
+                await loop.run_in_executor(None, lark.update_record, app_token, table_id, record_id, clean_fields)
+                print(f"  -> Record updated OK ({len(clean_fields)} fields).", flush=True)
+            except Exception as e:
+                err_msg = f"Ghi Lark thất bại: {str(e)[:200]}"
+                print(f"  -> Error updating record: {e}", flush=True)
+                tasks[task_id]["errors"].append({"record_id": record_id, "error": err_msg})
+                result_entry["error"] = err_msg
+                result_entry["trang_thai"] = "LỖI GHI LARK"
 
-            tasks[task_id]["results"].append({
-                "record_id": record_id,
-                "noi_dung": noi_dung,
-                "trang_thai": "LỖI",
-                "error": str(e),
-            })
-            tasks[task_id]["errors"].append({"record": record_id, "error": str(e)})
-
+        if "trang_thai" not in result_entry:
+            result_entry["trang_thai"] = update_fields.get(result_fields_config.get("trang_thai", "AI_Trạng_Thái"), "OK")
+        tasks[task_id]["results"].append(result_entry)
         tasks[task_id]["processed"] = i + 1
         await asyncio.sleep(0.3)
 
@@ -864,10 +1202,7 @@ async def push_upload_results_to_lark(data: dict):
                 so_tien = r.get("so_tien_trich_no")
                 if so_tien is None: so_tien = r.get("tong_thanh_toan")
                 if so_tien is not None:
-                    try:
-                        fields[c_tien] = float(so_tien)
-                    except (ValueError, TypeError):
-                        fields[c_tien] = str(so_tien)
+                    fields[c_tien] = str(so_tien)
         else:
             c_cv = col_map.get("co_vat")
             c_tt = col_map.get("tien_truoc_thue")
@@ -885,11 +1220,9 @@ async def push_upload_results_to_lark(data: dict):
             if c_nb and r.get("ten_nguoi_ban"): fields[c_nb] = str(r["ten_nguoi_ban"])
             if c_nm and r.get("ten_nguoi_mua"): fields[c_nm] = str(r["ten_nguoi_mua"])
             if c_tt and r.get("tien_truoc_thue") is not None:
-                try: fields[c_tt] = float(r["tien_truoc_thue"])
-                except: pass
+                fields[c_tt] = str(r["tien_truoc_thue"])
             if c_tv and r.get("tien_vat") is not None:
-                try: fields[c_tv] = float(r["tien_vat"])
-                except: pass
+                fields[c_tv] = str(r["tien_vat"])
 
         if fields:
             records_payload.append(fields)

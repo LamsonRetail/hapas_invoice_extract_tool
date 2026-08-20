@@ -426,8 +426,26 @@
 
                         <div class="form-grid" id="fieldSelectors" style="display:none;">
                             <div class="form-group">
-                                <label for="sAttField">Cột tệp đính kèm (hoá đơn)</label>
+                                <label for="sAttField">Cột tệp đính kèm — Hóa đơn</label>
                                 <select id="sAttField">
+                                    <option value="">-- Chọn cột --</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="sAttFieldHopDong">Cột tệp đính kèm — Hợp đồng</label>
+                                <select id="sAttFieldHopDong">
+                                    <option value="">-- Chọn cột --</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="sAttFieldBBNT">Cột tệp đính kèm — BBNT</label>
+                                <select id="sAttFieldBBNT">
+                                    <option value="">-- Chọn cột --</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="sAttFieldPhuLuc">Cột tệp đính kèm — Phụ lục HĐ</label>
+                                <select id="sAttFieldPhuLuc">
                                     <option value="">-- Chọn cột --</option>
                                 </select>
                             </div>
@@ -437,10 +455,16 @@
                                     <option value="">-- Chọn cột --</option>
                                 </select>
                             </div>
+                            <div class="form-group">
+                                <label for="sDocTypeField">Cột "Loại chứng từ có chứa giá trị số tiền trên"</label>
+                                <select id="sDocTypeField">
+                                    <option value="">-- Chọn cột --</option>
+                                </select>
+                                <p class="hint">Bot sẽ đọc giá trị cột này (“Hóa đơn” / “Hợp đồng” / “BBNT” / “Phụ lục hợp đồng”) để quyết định loại chứng từ cần bóc tách.</p>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- Result Columns Card -->
                     <div class="settings-card">
                         <div class="settings-card-header">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -448,41 +472,88 @@
                             </svg>
                             <h2>Cột kết quả AI</h2>
                         </div>
-                        <p class="hint" style="margin-bottom: 16px;">Đặt tên cột để bot ghi kết quả. Bot sẽ tự tạo nếu chưa có.</p>
+                        <p class="hint" style="margin-bottom: 16px;">Số cột AI cần tạo theo từng loại chứng từ. Bot sẽ tự tạo nếu chưa có.</p>
+
+                        <p style="font-size:12px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px;">Hóa đơn (luôn đọc nếu có file)</p>
                         <div class="form-grid four-col">
                             <div class="form-group">
-                                <label>Cột Có VAT?</label>
+                                <label>Có VAT?</label>
                                 <input type="text" id="sColVat" value="AI_Có_VAT">
                             </div>
                             <div class="form-group">
-                                <label>Cột Tiền Trước Thuế</label>
+                                <label>Tiền Trước Thuế</label>
                                 <input type="text" id="sColTruocThue" value="AI_Tiền_Trước_Thuế">
                             </div>
                             <div class="form-group">
-                                <label>Cột Tiền VAT</label>
+                                <label>Tiền VAT</label>
                                 <input type="text" id="sColTienVat" value="AI_Tiền_VAT">
                             </div>
                             <div class="form-group">
-                                <label>Cột Trạng Thái</label>
+                                <label>Tiền Sau Thuế</label>
+                                <input type="text" id="sColSauThue" value="AI_Tiền_Sau_Thuế">
+                            </div>
+                            <div class="form-group">
+                                <label>Trạng Thái</label>
                                 <input type="text" id="sColTrangThai" value="AI_Trạng_Thái">
                             </div>
                             <div class="form-group">
-                                <label>Cột Ngày HĐ</label>
+                                <label>Ngày HĐ</label>
                                 <input type="text" id="sColNgayHD" value="AI_Ngày_HĐ">
                             </div>
                             <div class="form-group">
-                                <label>Cột Số HĐ</label>
+                                <label>Số HĐ</label>
                                 <input type="text" id="sColSoHD" value="AI_Số_HĐ">
                             </div>
+                        </div>
+
+                        <p style="font-size:12px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; margin:16px 0 8px;">Hợp đồng / BBNT / Phụ lục HĐ</p>
+                        <div class="form-grid four-col">
                             <div class="form-group">
-                                <label>Cột Người Bán</label>
-                                <input type="text" id="sColNguoiBan" value="AI_Người_Bán">
+                                <label>MST_A (bên A / người bán)</label>
+                                <input type="text" id="sColMstA" value="AI_MST_A">
                             </div>
                             <div class="form-group">
-                                <label>Cột Người Mua</label>
-                                <input type="text" id="sColNguoiMua" value="AI_Người_Mua">
+                                <label>MST_B (bên B / người mua)</label>
+                                <input type="text" id="sColMstB" value="AI_MST_B">
+                            </div>
+                            <div class="form-group">
+                                <label>Số Hợp đồng</label>
+                                <input type="text" id="sColSoHopDong" value="AI_Số_Hợp_đồng">
+                            </div>
+                            <div class="form-group">
+                                <label>Số lần TT</label>
+                                <input type="text" id="sColSoLanTT" value="AI_Số_lần_TT">
+                            </div>
+                            <div class="form-group">
+                                <label>Giá trị TT (chi tiết)</label>
+                                <input type="text" id="sColGiaTriTT" value="AI_Giá_trị_TT">
+                            </div>
+                            <div class="form-group">
+                                <label>Tổng giá trị Net</label>
+                                <input type="text" id="sColTongNet" value="AI_Tổng_giá_trị_net">
+                            </div>
+                            <div class="form-group">
+                                <label>Tổng giá trị Gross</label>
+                                <input type="text" id="sColTongGross" value="AI_Tổng_giá_trị_gross">
+                            </div>
+                            <div class="form-group">
+                                <label>VAT chứng từ</label>
+                                <input type="text" id="sColVatChungTu" value="AI_VAT_chứng_từ">
+                            </div>
+                            <div class="form-group">
+                                <label>PIT chứng từ</label>
+                                <input type="text" id="sColPitChungTu" value="AI_PIT_chứng_từ">
+                            </div>
+                            <div class="form-group">
+                                <label>Số BBNT</label>
+                                <input type="text" id="sColSoBBNT" value="AI_Số_BBNT">
+                            </div>
+                            <div class="form-group">
+                                <label>Số Phụ lục HĐ</label>
+                                <input type="text" id="sColSoPLHD" value="AI_Số_PLHĐ">
                             </div>
                         </div>
+
                         <div class="settings-actions">
                             <button class="btn btn-secondary" id="btnSetupColumns">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -493,6 +564,7 @@
                             <span id="setupColumnsMsg" class="inline-msg"></span>
                         </div>
                     </div>
+
 
                     <!-- Save Button -->
                     <div class="settings-footer">
