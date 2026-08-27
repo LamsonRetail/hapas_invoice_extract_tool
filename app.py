@@ -1187,6 +1187,13 @@ async def push_upload_results_to_lark(data: dict):
                 if file_field_type == 17:
                     fid = r.get("file_id")
                     fpath = uploaded_files.get(fid) if fid else None
+                    # Fallback: sau khi container restart, map RAM uploaded_files bị mất
+                    # nhưng file vẫn nằm trên disk theo mẫu "{file_id}_{filename}".
+                    if fid and not fpath:
+                        for _p in UPLOAD_DIR.glob(f"{fid}_*"):
+                            fpath = str(_p)
+                            uploaded_files[fid] = fpath
+                            break
                     if fpath and os.path.exists(fpath):
                         try:
                             token = uploaded_tokens.get(fid)
