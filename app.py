@@ -1164,6 +1164,9 @@ async def push_upload_results_to_lark(data: dict):
 
     uploaded_tokens: Dict[str, str] = {}
 
+    # Map tên field -> kiểu field thực tế của bảng Lark (để ép kiểu Number trước khi ghi)
+    field_type_map = {name: f.get("type") for name, f in existing_names.items()}
+
     records_payload = []
     for r in results:
         fields = {}
@@ -1225,7 +1228,12 @@ async def push_upload_results_to_lark(data: dict):
                 fields[c_tv] = str(r["tien_vat"])
 
         if fields:
-            records_payload.append(fields)
+            # Ép kiểu các cột Number (vd "Số tiền trích nợ") để tránh NumberFieldConvFail
+            fields, _dropped = _sanitize_fields_for_lark(fields, field_type_map)
+            if _dropped:
+                print(f"  -> Bỏ field không ép được kiểu số: {_dropped}", flush=True)
+            if fields:
+                records_payload.append(fields)
 
     if not records_payload:
         raise HTTPException(status_code=400, detail="Không có cột nào khớp giữa kết quả bóc tách và bảng Lark Base")
