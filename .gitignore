@@ -10,6 +10,10 @@ env/
 # App-specific
 uploads/
 
+# Secrets: config thật quản lý qua UI Cài đặt trên VM (bind-mount), KHÔNG bake vào repo.
+# Dùng config.example.json làm mẫu; seed config.json thủ công cho môi trường mới.
+config.json
+
 # OS specific
 .DS_Store
 Thumbs.db
