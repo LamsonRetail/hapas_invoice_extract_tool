@@ -7,19 +7,18 @@ import threading
 import time
 from typing import Dict, Any, List, Optional
 
-import httpx
 import openai
 from openai import OpenAI
 
 
 # Timeout rõ ràng: connect ngắn để lỗi mạng/tunnel báo về sớm, read đủ dài cho chứng từ nhiều trang.
 # (Mặc định của SDK là read=600s x 3 lần thử -> một kết nối treo có thể giữ 1 file tới ~30 phút.)
-_CLIENT_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
+_CLIENT_TIMEOUT = openai.Timeout(300.0, connect=15.0)
 MAX_ATTEMPTS = 5
 _RETRYABLE_STATUS = (408, 500, 502, 503, 504, 529)
 
 # Dùng chung client theo (api_key, base_url) để tái sử dụng kết nối HTTP giữa các file,
-# tránh bắt tay TCP+TLS lại qua tunnel cho mỗi request. httpx.Client an toàn khi dùng đa luồng.
+# tránh bắt tay TCP+TLS lại qua tunnel cho mỗi request. Client của SDK an toàn khi dùng đa luồng.
 _clients: Dict[tuple, OpenAI] = {}
 _clients_lock = threading.Lock()
 
