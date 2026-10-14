@@ -218,6 +218,7 @@ body {
 .col-files { width: 120px; }
 .col-amount { width: 130px; }
 .col-vat { width: 80px; }
+.col-date { width: 105px; }
 .col-before { width: 130px; }
 .col-vatamt { width: 130px; }
 .col-status { width: 110px; }

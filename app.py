@@ -532,6 +532,7 @@ def get_lark_records(
             tien_truoc_thue = _extract_text_field(fields, result_fields.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế")) or None
             tien_vat = _extract_text_field(fields, result_fields.get("tien_vat", "AI_Tiền_VAT")) or None
             trang_thai = _extract_text_field(fields, result_fields.get("trang_thai", "AI_Trạng_Thái"))
+            ngay_hoa_don = _extract_text_field(fields, result_fields.get("ngay_hoa_don", "AI_Ngày_HĐ"))
 
             # Content field
             noi_dung = _extract_text_field(fields, content_field)
@@ -562,6 +563,7 @@ def get_lark_records(
                 "co_vat": co_vat,
                 "tien_truoc_thue": tien_truoc_thue,
                 "tien_vat": tien_vat,
+                "ngay_hoa_don": ngay_hoa_don,
                 "trang_thai": trang_thai,
                 "loai_chung_tu": loai_chung_tu,
                 "is_processed": bool(trang_thai),

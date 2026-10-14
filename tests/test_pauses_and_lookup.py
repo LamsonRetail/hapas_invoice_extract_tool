@@ -385,6 +385,24 @@ class ContractOnlyStatusTest(unittest.TestCase):
         self.assertEqual(update["AI_Trạng_Thái"], "Không đọc được số chứng từ từ file đính kèm")
 
 
+class RecordsListingTest(unittest.TestCase):
+    def test_returns_invoice_date_and_text_money(self):
+        lark = mock.Mock()
+        lark.list_records.return_value = ([{"record_id": "r1", "fields": {
+            "Hóa đơn": [{"file_token": "t", "name": "a.pdf"}],
+            "AI_Ngày_HĐ": [{"text": "18/08/2026", "type": "text"}],
+            "AI_Tiền_Trước_Thuế": [{"text": "105555", "type": "text"}],
+            "AI_Trạng_Thái": "OK",
+        }}], None, 1)
+        cfg = {"lark_app_token": "app", "lark_table_id": "tbl", "lark_attachment_field": "Hóa đơn"}
+        with mock.patch.object(app, "make_lark_client", return_value=lark), \
+                mock.patch.object(app, "load_config", return_value=cfg):
+            item = app.get_lark_records()["items"][0]
+        self.assertEqual(item["ngay_hoa_don"], "18/08/2026")
+        self.assertEqual(item["tien_truoc_thue"], "105555")
+        self.assertTrue(item["is_processed"])
+
+
 class PushUploadGuardTest(unittest.TestCase):
     def test_lookup_file_column_is_not_converted_or_written(self):
         lark = mock.Mock()
