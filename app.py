@@ -174,10 +174,18 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     # Ghi ra file tạm rồi thay thế nguyên tử: luồng khác đang load_config() không đọc phải file ghi dở.
+    content = json.dumps(cfg, ensure_ascii=False, indent=4)
     tmp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=4)
-    os.replace(tmp_path, CONFIG_PATH)
+        f.write(content)
+    try:
+        os.replace(tmp_path, CONFIG_PATH)
+    except OSError:
+        # Docker gắn config.json dạng bind mount một file: không đổi tên đè lên được (EBUSY).
+        # Khi đó ghi thẳng vào file, nội dung đã dựng sẵn nên chỉ một lần ghi ngắn.
+        os.unlink(tmp_path)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write(content)
 
 
 config = load_config()

@@ -378,5 +378,29 @@ class PushUploadGuardTest(unittest.TestCase):
         self.assertEqual(payload[0]["Bên A"], "Cty A")
 
 
+class SaveConfigTest(unittest.TestCase):
+    def _with_config_path(self):
+        d = Path(tempfile.mkdtemp())
+        patcher = mock.patch.object(app, "CONFIG_PATH", d / "config.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return d
+
+    def test_atomic_replace(self):
+        d = self._with_config_path()
+        app.save_config({"openai_model": "m1", "ten": "Hóa đơn"})
+        self.assertEqual(app.load_config(), {"openai_model": "m1", "ten": "Hóa đơn"})
+        self.assertEqual([p.name for p in d.iterdir()], ["config.json"])
+
+    def test_bind_mounted_file_falls_back_to_in_place_write(self):
+        # Trong Docker config.json là bind mount một file: os.replace báo EBUSY.
+        d = self._with_config_path()
+        app.save_config({"openai_model": "old"})
+        with mock.patch.object(app.os, "replace", side_effect=OSError(16, "Device or resource busy")):
+            app.save_config({"openai_model": "new"})
+        self.assertEqual(app.load_config(), {"openai_model": "new"})
+        self.assertEqual([p.name for p in d.iterdir()], ["config.json"])
+
+
 if __name__ == "__main__":
     unittest.main()
