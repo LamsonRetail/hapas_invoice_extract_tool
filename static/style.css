@@ -219,6 +219,7 @@ body {
 .col-amount { width: 130px; }
 .col-vat { width: 80px; }
 .col-date { width: 105px; }
+.col-docno { width: 150px; }
 .col-before { width: 130px; }
 .col-vatamt { width: 130px; }
 .col-status { width: 110px; }

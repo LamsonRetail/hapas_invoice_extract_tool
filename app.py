@@ -510,6 +510,7 @@ def get_lark_records(
             page_token=page_token,
         )
 
+        rf_all = {**DEFAULT_RESULT_FIELDS, **(result_fields or {})}
         items = []
         for rec in records:
             fields = rec.get("fields", {})
@@ -526,13 +527,19 @@ def get_lark_records(
             for extra_field in [att_field_hop_dong, att_field_bbnt, att_field_phu_luc]:
                 att_names.extend(a["name"] for a in _get_attachments(fields, extra_field))
 
-            # Result fields (if already processed)
-            co_vat = _extract_text_field(fields, result_fields.get("co_vat", "AI_Có_VAT"))
-            # Cột tiền có thể là Text (trả về [{"text": ...}]) hoặc Number -> đưa về chữ/số để frontend hiển thị.
-            tien_truoc_thue = _extract_text_field(fields, result_fields.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế")) or None
-            tien_vat = _extract_text_field(fields, result_fields.get("tien_vat", "AI_Tiền_VAT")) or None
-            trang_thai = _extract_text_field(fields, result_fields.get("trang_thai", "AI_Trạng_Thái"))
-            ngay_hoa_don = _extract_text_field(fields, result_fields.get("ngay_hoa_don", "AI_Ngày_HĐ"))
+            # Result fields (if already processed). Cột tiền có thể là Text (trả về [{"text": ...}])
+            # hoặc Number -> đưa về chữ để frontend hiển thị.
+            def ai(key: str) -> str:
+                return _extract_text_field(fields, rf_all.get(key, ""))
+
+            co_vat = ai("co_vat")
+            trang_thai = ai("trang_thai")
+            ngay_hoa_don = ai("ngay_hoa_don")
+            # Dòng hóa đơn đọc nhóm cột hóa đơn; dòng hợp đồng/BBNT/phụ lục đọc nhóm cột chứng từ.
+            so_chung_tu = ai("so_hoa_don") or ai("so_hop_dong") or ai("so_plhd") or ai("so_bbnt")
+            tien_truoc_thue = ai("tien_truoc_thue") or ai("tong_gia_tri_net") or None
+            tien_vat = ai("tien_vat") or ai("vat_chung_tu") or None
+            tong_tien = ai("tien_sau_thue") or ai("tong_gia_tri_gross") or None
 
             # Content field
             noi_dung = _extract_text_field(fields, content_field)
@@ -563,6 +570,8 @@ def get_lark_records(
                 "co_vat": co_vat,
                 "tien_truoc_thue": tien_truoc_thue,
                 "tien_vat": tien_vat,
+                "tong_tien": tong_tien,
+                "so_chung_tu": so_chung_tu,
                 "ngay_hoa_don": ngay_hoa_don,
                 "trang_thai": trang_thai,
                 "loai_chung_tu": loai_chung_tu,

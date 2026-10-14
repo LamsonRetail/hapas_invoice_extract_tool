@@ -832,7 +832,7 @@ function applyFilter() {
 function renderTable() {
     const tbody = $("recordsBody");
     if (filteredRecords.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-muted)">Không có dữ liệu</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--text-muted)">Không có dữ liệu</td></tr>`;
         return;
     }
 
@@ -847,7 +847,7 @@ function renderTable() {
     }
 
     if (displayRecords.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-muted)">Không có dòng nào trong khoảng này</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--text-muted)">Không có dòng nào trong khoảng này</td></tr>`;
         return;
     }
 
@@ -888,10 +888,12 @@ function renderTable() {
             <td title="${rec.noi_dung}">${truncate(rec.noi_dung || "-", 60)}</td>
             <td>${attHtml}</td>
             <td class="center">${vatBadge}</td>
+            <td title="${escapeHtml(rec.so_chung_tu)}">${rec.so_chung_tu ? escapeHtml(truncate(String(rec.so_chung_tu), 22)) : "-"}</td>
             <td class="center">${rec.ngay_hoa_don ? truncate(String(rec.ngay_hoa_don), 23) : "-"}</td>
             <td class="number">${formatMoney(rec.tien_truoc_thue)}</td>
             <td class="number">${formatMoney(rec.tien_vat)}</td>
-            <td class="center">${statusHtml}</td>
+            <td class="number">${formatMoney(rec.tong_tien)}</td>
+            <td class="center" title="${escapeHtml(rec.trang_thai)}">${statusHtml}</td>
         </tr>`;
     }).join("");
 }
@@ -1064,6 +1066,10 @@ function updateConnectionStatus(connected) {
         el.className = "connection-status error";
         el.querySelector(".status-text").textContent = "Mất kết nối";
     }
+}
+
+function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function formatMoney(value) {

@@ -402,6 +402,27 @@ class RecordsListingTest(unittest.TestCase):
         self.assertEqual(item["tien_truoc_thue"], "105555")
         self.assertTrue(item["is_processed"])
 
+    def test_contract_row_shows_contract_results(self):
+        lark = mock.Mock()
+        lark.list_records.return_value = ([{"record_id": "r2", "fields": {
+            "Hóa đơn": [{"file_token": "t", "name": "hd.pdf"}],
+            "AI_Số_Hợp_đồng": "30072026/HDDV/HP-VMZ",
+            "AI_Tổng_giá_trị_net": [{"text": "22800000", "type": "text"}],
+            "AI_VAT_chứng_từ": 1824000,
+            "AI_Tổng_giá_trị_gross": [{"text": "24624000", "type": "text"}],
+            "AI_Trạng_Thái": "OK - Hợp đồng",
+        }}], None, 1)
+        cfg = {"lark_app_token": "app", "lark_table_id": "tbl", "lark_attachment_field": "Hóa đơn",
+               "lark_result_fields": {"trang_thai": "AI_Trạng_Thái"}}  # config cũ thiếu khoá -> dùng mặc định
+        with mock.patch.object(app, "make_lark_client", return_value=lark), \
+                mock.patch.object(app, "load_config", return_value=cfg):
+            item = app.get_lark_records()["items"][0]
+        self.assertEqual(item["so_chung_tu"], "30072026/HDDV/HP-VMZ")
+        self.assertEqual(item["tien_truoc_thue"], "22800000")
+        self.assertEqual(item["tien_vat"], "1824000")
+        self.assertEqual(item["tong_tien"], "24624000")
+        self.assertEqual(item["ngay_hoa_don"], "")
+
 
 class PushUploadGuardTest(unittest.TestCase):
     def test_lookup_file_column_is_not_converted_or_written(self):
