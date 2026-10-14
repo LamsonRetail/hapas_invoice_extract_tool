@@ -356,6 +356,35 @@ class BatchProcessingTest(unittest.TestCase):
         app.tasks.pop(task_id)
 
 
+class ContractOnlyStatusTest(unittest.TestCase):
+    """Dòng chỉ có hợp đồng, không có Loại chứng từ: trước đây không ghi AI_Trạng_Thái nên UI báo 'Chưa xử lý'."""
+
+    def _run(self, numbers):
+        lark = FakeLark()
+        lark.get_record = lambda *a: {"fields": {LOOKUP_HD: [{"file_token": "hd-x", "name": "hd.pdf"}]}}
+        extractor = FakeExtractor()
+        extractor.extract_doc_numbers = lambda *a, **k: numbers
+        task_id = f"test-contract-{time.time_ns()}"
+        app.tasks[task_id] = {"status": "processing", "total": 1, "processed": 0,
+                              "current_record": "", "results": [], "errors": []}
+        with mock.patch.object(app, "load_config", return_value=BATCH_CFG), \
+                mock.patch.object(app, "make_lark_client", return_value=lark), \
+                mock.patch.object(app, "AIExtractor", return_value=extractor), \
+                mock.patch.object(app.FileHandler, "process_file", return_value=[{"type": "text", "content": "x"}]):
+            asyncio.run(app.process_lark_batch(task_id, ["recC"]))
+        app.tasks.pop(task_id)
+        return lark.updates["recC"]
+
+    def test_status_written_when_only_number_found(self):
+        update = self._run({"so_hop_dong": "008/2026", "so_bbnt": None, "so_plhd": None})
+        self.assertEqual(update["AI_Số_Hợp_đồng"], "008/2026")
+        self.assertTrue(update["AI_Trạng_Thái"].startswith("OK - Số HĐ: 008/2026"), update["AI_Trạng_Thái"])
+
+    def test_status_written_when_nothing_readable(self):
+        update = self._run({"so_hop_dong": None, "so_bbnt": None, "so_plhd": None})
+        self.assertEqual(update["AI_Trạng_Thái"], "Không đọc được số chứng từ từ file đính kèm")
+
+
 class PushUploadGuardTest(unittest.TestCase):
     def test_lookup_file_column_is_not_converted_or_written(self):
         lark = mock.Mock()

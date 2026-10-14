@@ -528,8 +528,9 @@ def get_lark_records(
 
             # Result fields (if already processed)
             co_vat = _extract_text_field(fields, result_fields.get("co_vat", "AI_Có_VAT"))
-            tien_truoc_thue = fields.get(result_fields.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế"))
-            tien_vat = fields.get(result_fields.get("tien_vat", "AI_Tiền_VAT"))
+            # Cột tiền có thể là Text (trả về [{"text": ...}]) hoặc Number -> đưa về chữ/số để frontend hiển thị.
+            tien_truoc_thue = _extract_text_field(fields, result_fields.get("tien_truoc_thue", "AI_Tiền_Trước_Thuế")) or None
+            tien_vat = _extract_text_field(fields, result_fields.get("tien_vat", "AI_Tiền_VAT")) or None
             trang_thai = _extract_text_field(fields, result_fields.get("trang_thai", "AI_Trạng_Thái"))
 
             # Content field
@@ -954,6 +955,19 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
             if so_col and so_col not in update_fields:
                 await read_doc_number(c_key, contract_att_field, contract_doc_type, so_key)
 
+        # Dòng chỉ có hợp đồng/BBNT/phụ lục mà không có cột chứa số tiền thì chỉ đọc được mã số (bước 1).
+        # Vẫn ghi trạng thái, nếu không giao diện báo "Chưa xử lý" dù đã bóc xong.
+        if update_fields and tt_field not in update_fields:
+            so_found = []
+            for key, label in (("so_hop_dong", "Số HĐ"), ("so_bbnt", "Số BBNT"), ("so_plhd", "Số PLHĐ")):
+                col = result_fields_config.get(key)
+                if col and col in update_fields:
+                    so_found.append(f"{label}: {update_fields[col]}")
+            status = ("OK - " + "; ".join(so_found)) if so_found else "OK"
+            if not loai_chung_tu:
+                status += " | Chưa đọc giá trị (chưa có Loại chứng từ)"
+            update_fields[tt_field] = status[:500]
+
         # Skip if no attachment fields have any files
         if not loai_chung_tu and not update_fields:
             all_att_names = []
@@ -962,6 +976,8 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
             if not all_att_names:
                 update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Không có đính kèm"
                 update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = "Bỏ qua - không có file"
+            else:
+                update_fields[tt_field] = "Không đọc được số chứng từ từ file đính kèm"
 
         # Write all results back to Lark
         if update_fields:
