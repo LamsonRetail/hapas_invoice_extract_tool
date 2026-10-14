@@ -3,10 +3,74 @@ AI Extractor Module - Sử dụng GPT-4o để bóc tách dữ liệu hoá đơn
 """
 import json
 import re
+import threading
 import time
 from typing import Dict, Any, List, Optional
 
+import httpx
+import openai
 from openai import OpenAI
+
+
+# Timeout rõ ràng: connect ngắn để lỗi mạng/tunnel báo về sớm, read đủ dài cho chứng từ nhiều trang.
+# (Mặc định của SDK là read=600s x 3 lần thử -> một kết nối treo có thể giữ 1 file tới ~30 phút.)
+_CLIENT_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
+MAX_ATTEMPTS = 5
+_RETRYABLE_STATUS = (408, 500, 502, 503, 504, 529)
+
+# Dùng chung client theo (api_key, base_url) để tái sử dụng kết nối HTTP giữa các file,
+# tránh bắt tay TCP+TLS lại qua tunnel cho mỗi request. httpx.Client an toàn khi dùng đa luồng.
+_clients: Dict[tuple, OpenAI] = {}
+_clients_lock = threading.Lock()
+
+
+def _get_client(api_key: str, base_url: str) -> OpenAI:
+    key = (api_key, base_url or None)
+    with _clients_lock:
+        client = _clients.get(key)
+        if client is None:
+            # max_retries=0: chỉ giữ MỘT lớp retry (_create_with_retry), tránh SDK retry lồng bên trong.
+            client = OpenAI(api_key=api_key, base_url=base_url or None,
+                            timeout=_CLIENT_TIMEOUT, max_retries=0)
+            _clients[key] = client
+        return client
+
+
+def _retry_after_seconds(err: Exception) -> Optional[float]:
+    response = getattr(err, "response", None)
+    if response is None:
+        return None
+    try:
+        return min(60.0, max(0.0, float(response.headers.get("retry-after", ""))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_delay(err: Exception, attempt: int) -> Optional[float]:
+    """Số giây chờ trước lần thử lại, hoặc None nếu lỗi này không nên thử lại.
+    Phân loại theo KIỂU lỗi / status code, không dò chuỗi trong message
+    (dò chuỗi từng khiến lỗi 400 có chứa '503' trong nội dung bị retry oan)."""
+    if isinstance(err, openai.RateLimitError):
+        msg = str(err).lower()
+        # Hạn mức theo NGÀY không hồi lại sau vài chục giây -> báo lỗi ngay.
+        if "per day" in msg or "perday" in msg:
+            return None
+        retry_after = _retry_after_seconds(err)
+        return retry_after if retry_after is not None else float(min(60, 5 * (2 ** attempt)))
+    if isinstance(err, openai.APIStatusError):
+        if err.status_code not in _RETRYABLE_STATUS:
+            return None
+        msg = str(err).lower()
+        if "rate limit" in msg or "resource_exhausted" in msg or "too many requests" in msg:
+            # Gateway bọc lỗi 429 của nhà cung cấp thành 5xx: chờ theo nhịp rate limit, không phải 1-8s.
+            return float(min(60, 5 * (2 ** attempt)))
+        return float(2 ** attempt)
+    if isinstance(err, openai.APITimeoutError):
+        # Đã chờ tới timeout một lần; chỉ thử lại thêm 1 lần.
+        return 2.0 if attempt == 0 else None
+    if isinstance(err, openai.APIConnectionError):
+        return float(2 ** attempt)
+    return None
 
 
 EXTRACTION_PROMPT = """Bạn là chuyên gia phân tích hoá đơn tài chính và chứng từ giao dịch ngân hàng Việt Nam. Hãy phân tích hoá đơn/chứng từ thanh toán/bill chuyển khoản này và trích xuất thông tin chi tiết.
@@ -116,8 +180,19 @@ class AIExtractor:
     """Sử dụng OpenAI/DeepSeek/Gemini để bóc tách dữ liệu từ hoá đơn và chứng từ hợp đồng."""
 
     def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str = ""):
-        self.client = OpenAI(api_key=api_key, base_url=base_url if base_url else None)
+        self.client = _get_client(api_key, base_url)
         self.model = model
+
+    def _create_with_retry(self, api_kwargs: Dict[str, Any]):
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                return self.client.chat.completions.create(**api_kwargs)
+            except Exception as e:
+                delay = _retry_delay(e, attempt)
+                # Không ngủ sau lần thử cuối (bản cũ ngủ thừa 16s rồi mới báo lỗi).
+                if delay is None or attempt == MAX_ATTEMPTS - 1:
+                    raise
+                time.sleep(delay)
 
     def extract_invoice(self, content_blocks: List[Dict[str, Any]], filename: str = "") -> Dict[str, Any]:
         """
@@ -145,37 +220,12 @@ class AIExtractor:
             if "gpt-4" in self.model.lower() or "gpt-3.5" in self.model.lower():
                 api_kwargs["response_format"] = {"type": "json_object"}
 
-            max_retries = 5
-            last_error = None
-
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.chat.completions.create(**api_kwargs)
-                    raw_text = response.choices[0].message.content.strip()
-                    result = self._parse_response(raw_text)
-                    result["_raw_response"] = raw_text
-                    result["_filename"] = filename
-                    return result
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e).lower()
-                    is_quota = "429" in error_str or "quota" in error_str or "rate limit" in error_str
-                    is_overload = "503" in error_str or "502" in error_str or "high demand" in error_str
-                    if is_quota:
-                        # 429 = giới hạn theo phút (RPM/TPM), KHÔNG phải hết tiền/credit.
-                        # Cần đợi lâu hơn để qua cửa sổ 1 phút: 5s, 10s, 20s, 40s, 60s (cap).
-                        if attempt < max_retries - 1:
-                            time.sleep(min(60, 5 * (2 ** attempt)))
-                            continue
-                        break
-                    elif is_overload:
-                        time.sleep(2 ** attempt)  # Đợi 1s, 2s, 4s...
-                        continue
-                    else:
-                        break # Dừng nếu là lỗi khác (VD: sai API key)
-
-            # Nếu thử lại nhiều lần vẫn thất bại
-            raise last_error
+            response = self._create_with_retry(api_kwargs)
+            raw_text = response.choices[0].message.content.strip()
+            result = self._parse_response(raw_text)
+            result["_raw_response"] = raw_text
+            result["_filename"] = filename
+            return result
 
         except Exception as e:
             return {
@@ -221,35 +271,13 @@ class AIExtractor:
             if "gpt-4" in self.model.lower() or "gpt-3.5" in self.model.lower():
                 api_kwargs["response_format"] = {"type": "json_object"}
 
-            max_retries = 5
-            last_error = None
-
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.chat.completions.create(**api_kwargs)
-                    raw_text = response.choices[0].message.content.strip()
-                    result = self._parse_response(raw_text)
-                    result["_raw_response"] = raw_text
-                    result["_filename"] = filename
-                    result["_doc_type"] = doc_type
-                    return result
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e).lower()
-                    is_quota = "429" in error_str or "quota" in error_str or "rate limit" in error_str
-                    is_overload = "503" in error_str or "502" in error_str or "high demand" in error_str
-                    if is_quota:
-                        if attempt < max_retries - 1:
-                            time.sleep(min(60, 5 * (2 ** attempt)))
-                            continue
-                        break
-                    elif is_overload:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        break
-
-            raise last_error
+            response = self._create_with_retry(api_kwargs)
+            raw_text = response.choices[0].message.content.strip()
+            result = self._parse_response(raw_text)
+            result["_raw_response"] = raw_text
+            result["_filename"] = filename
+            result["_doc_type"] = doc_type
+            return result
 
         except Exception as e:
             return {
@@ -297,29 +325,9 @@ class AIExtractor:
             if "gpt-4" in self.model.lower() or "gpt-3.5" in self.model.lower():
                 api_kwargs["response_format"] = {"type": "json_object"}
 
-            max_retries = 5
-            last_error = None
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.chat.completions.create(**api_kwargs)
-                    raw_text = response.choices[0].message.content.strip()
-                    return self._parse_response(raw_text)
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e).lower()
-                    is_quota = "429" in error_str or "quota" in error_str or "rate limit" in error_str
-                    is_overload = "503" in error_str or "502" in error_str or "high demand" in error_str
-                    if is_quota:
-                        if attempt < max_retries - 1:
-                            time.sleep(min(60, 5 * (2 ** attempt)))
-                            continue
-                        break
-                    elif is_overload:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        break
-            raise last_error
+            response = self._create_with_retry(api_kwargs)
+            raw_text = response.choices[0].message.content.strip()
+            return self._parse_response(raw_text)
         except Exception as e:
             return {"error": str(e), "so_hop_dong": None, "so_bbnt": None, "so_plhd": None}
 

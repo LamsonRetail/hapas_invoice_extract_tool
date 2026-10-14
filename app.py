@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 import asyncio
+import functools
 import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -19,6 +20,7 @@ if sys.platform.startswith('win'):
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from extractors.file_handler import FileHandler
 from extractors.ai_extractor import AIExtractor
@@ -57,6 +59,11 @@ DEFAULT_RESULT_FIELDS = {
 
 # Lark field type constants
 LARK_FIELD_NUMBER = 2
+# Lookup (19), Formula (20) và các cột hệ thống (thời gian/người tạo-sửa, số tự tăng) chỉ đọc được.
+LARK_READONLY_FIELD_TYPES = {19, 20, 1001, 1002, 1003, 1004, 1005}
+
+# Số record xử lý đồng thời trong tab Larkbase. Đo thực tế: gateway chịu tốt 3 request song song.
+BATCH_CONCURRENCY = 3
 
 
 def _coerce_number(val):
@@ -138,11 +145,15 @@ def _pick_money(raw_val, computed_val):
 def _sanitize_fields_for_lark(update_fields: dict, field_type_map: dict) -> tuple:
     """Ép kiểu các giá trị theo kiểu field thực tế của Lark.
     - Field kiểu Number (type 2): chuyển giá trị về số; nếu không parse được thì bỏ field đó.
-    Trả về (clean_fields, dropped) với dropped là danh sách field bị bỏ do không ép kiểu được."""
+    - Field chỉ-đọc (Lookup, Formula, cột hệ thống): bỏ — Lark từ chối ghi và sẽ làm hỏng cả request.
+    Trả về (clean_fields, dropped) với dropped là danh sách field bị bỏ."""
     clean = {}
     dropped = []
     for name, value in update_fields.items():
         ftype = field_type_map.get(name)
+        if ftype in LARK_READONLY_FIELD_TYPES:
+            dropped.append(name)
+            continue
         if ftype == LARK_FIELD_NUMBER:
             num = _coerce_number(value)
             if num is None:
@@ -162,8 +173,11 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    # Ghi ra file tạm rồi thay thế nguyên tử: luồng khác đang load_config() không đọc phải file ghi dở.
+    tmp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
+    os.replace(tmp_path, CONFIG_PATH)
 
 
 config = load_config()
@@ -193,21 +207,58 @@ uploaded_files: Dict[str, str] = {}
 # Helpers
 # ============================================================
 
+def _unwrap_lark_value(val):
+    """records/search trả cột Lookup/Formula ở dạng gói {"type": <kiểu gốc>, "value": [...]}.
+    Mở lớp gói để phần còn lại xử lý như giá trị của cột thường."""
+    while isinstance(val, dict) and "value" in val and isinstance(val.get("type"), int):
+        val = val["value"]
+    return val
+
+
+def _get_attachments(fields: dict, field_name: str) -> List[dict]:
+    """Danh sách file đính kèm của một cột, mỗi phần tử có "file_token" và "name".
+    Nhận cả cột Attachment thường, cột Lookup/Formula trả về file (dạng gói của records/search),
+    và định dạng của GET record (dùng key "attachmentToken" thay cho "file_token")."""
+    if not field_name:
+        return []
+    val = _unwrap_lark_value(fields.get(field_name))
+    if not isinstance(val, list):
+        return []
+    atts = []
+    for item in val:
+        if not isinstance(item, dict):
+            continue
+        token = item.get("file_token") or item.get("attachmentToken")
+        if token:
+            atts.append({**item, "file_token": token, "name": item.get("name") or "file"})
+    return atts
+
+
 def _extract_text_field(fields: dict, field_name: str) -> str:
     """Extract text value from a Lark Bitable field, handling various types."""
-    val = fields.get(field_name)
+    val = _unwrap_lark_value(fields.get(field_name))
     if val is None:
         return ""
     if isinstance(val, str):
         return val
     if isinstance(val, (int, float)):
         return str(val)
+    if isinstance(val, dict):
+        if "text" in val:
+            return str(val["text"])
+        if isinstance(val.get("users"), list):
+            val = val["users"]
+        else:
+            # Cột liên kết ({"link_record_ids": ...}) và object khác: không có chữ để hiển thị.
+            return ""
     if isinstance(val, list):
         parts = []
         for v in val:
             if isinstance(v, dict):
-                parts.append(v.get("text", str(v)))
-            else:
+                text = v.get("text") or v.get("name")
+                if text:
+                    parts.append(str(text))
+            elif v is not None:
                 parts.append(str(v))
         return " ".join(parts)
     return str(val)
@@ -320,7 +371,7 @@ async def save_settings(data: dict):
 # ============================================================
 
 @app.post("/api/lark/resolve")
-async def resolve_lark_url(data: dict):
+def resolve_lark_url(data: dict):
     """
     Resolve a Lark Bitable URL to app_token + table_id + view_id.
     Also updates base_url in config if different.
@@ -351,7 +402,7 @@ async def resolve_lark_url(data: dict):
 
 
 @app.get("/api/lark/fields")
-async def get_lark_fields(app_token: str, table_id: str):
+def get_lark_fields(app_token: str, table_id: str):
     """Get list of fields (columns) for a Bitable table."""
     try:
         lark = make_lark_client()
@@ -362,7 +413,7 @@ async def get_lark_fields(app_token: str, table_id: str):
 
 
 @app.post("/api/lark/setup-columns")
-async def setup_result_columns(data: dict):
+def setup_result_columns(data: dict):
     """
     Auto-create the result columns if they don't already exist.
     Returns the final field map.
@@ -423,7 +474,7 @@ async def setup_result_columns(data: dict):
 # ============================================================
 
 @app.get("/api/lark/records")
-async def get_lark_records(
+def get_lark_records(
     page_token: str = None,
     page_size: int = 50,
     app_token: str = None,
@@ -457,10 +508,7 @@ async def get_lark_records(
             record_id = rec.get("record_id", "")
 
             # Attachments (invoice)
-            attachments = fields.get(attachment_field, [])
-            att_names = []
-            if isinstance(attachments, list):
-                att_names = [a.get("name", "file") for a in attachments if isinstance(a, dict)]
+            att_names = [a["name"] for a in _get_attachments(fields, attachment_field)]
 
             # Also check other document type fields for attachments
             att_field_hop_dong = cfg.get("lark_att_field_hop_dong", "")
@@ -468,11 +516,7 @@ async def get_lark_records(
             att_field_phu_luc = cfg.get("lark_att_field_phu_luc", "")
 
             for extra_field in [att_field_hop_dong, att_field_bbnt, att_field_phu_luc]:
-                if extra_field and extra_field in fields:
-                    extra_atts = fields.get(extra_field, [])
-                    if isinstance(extra_atts, list):
-                        extra_names = [a.get("name", "file") for a in extra_atts if isinstance(a, dict)]
-                        att_names.extend(extra_names)
+                att_names.extend(a["name"] for a in _get_attachments(fields, extra_field))
 
             # Result fields (if already processed)
             co_vat = _extract_text_field(fields, result_fields.get("co_vat", "AI_Có_VAT"))
@@ -588,9 +632,23 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
     except Exception as e:
         print(f"  -> Warning: Could not fetch field_id: {e}", flush=True)
 
-    print(f"  -> Starting loop for {len(record_ids)} record(s)...", flush=True)
+    async def render(path: str, first_page_only: bool = False):
+        # Render PDF/ảnh là việc nặng CPU -> chạy trong threadpool để không chặn event loop.
+        return await loop.run_in_executor(
+            None, functools.partial(FileHandler.process_file, path, first_page_only=first_page_only))
 
-    for i, record_id in enumerate(record_ids):
+    async def process_one(i: int, record_id: str, downloaded: Dict[str, str]):
+        async def fetch(file_token: str, name: str, field_id: Optional[str]) -> str:
+            """Tải attachment MỘT lần cho mỗi record; bước 1 và bước 2 dùng lại cùng file tạm."""
+            path = downloaded.get(file_token)
+            if path is None:
+                path = await loop.run_in_executor(
+                    None, lark.save_attachment_temp,
+                    file_token, name, app_token, table_id, field_id, record_id
+                )
+                downloaded[file_token] = path
+            return path
+
         print(f"\n[{i+1}/{len(record_ids)}] Fetching record {record_id}...", flush=True)
         try:
             rec = await loop.run_in_executor(None, lark.get_record, app_token, table_id, record_id)
@@ -601,8 +659,8 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                 "trang_thai": "LỖI",
                 "error": f"Cannot fetch record: {e}",
             })
-            tasks[task_id]["processed"] = i + 1
-            continue
+            tasks[task_id]["processed"] += 1
+            return
 
         fields = rec.get("fields", {})
         noi_dung = _extract_text_field(fields, content_field)
@@ -628,8 +686,8 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
         }
 
         # ---- Process Invoice (Hóa đơn) - always if has attachment ----
-        invoice_attachments = fields.get(attachment_field, [])
-        should_process_invoice = isinstance(invoice_attachments, list) and len(invoice_attachments) > 0
+        invoice_attachments = _get_attachments(fields, attachment_field)
+        should_process_invoice = len(invoice_attachments) > 0
 
         if should_process_invoice:
             print(f"  -> Processing Hóa đơn attachment(s)...", flush=True)
@@ -646,16 +704,8 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                     if not file_token: continue
 
                     print(f"  -> Downloading invoice: {att_name} ({file_token})", flush=True)
-                    tmp_path = await loop.run_in_executor(
-                        None, lark.save_attachment_temp,
-                        file_token, att_name, app_token, table_id, att_field_id, record_id
-                    )
-                    try:
-                        content_blocks = FileHandler.process_file(tmp_path)
-                        all_content_blocks.extend(content_blocks)
-                    finally:
-                        try: os.unlink(tmp_path)
-                        except: pass
+                    tmp_path = await fetch(file_token, att_name, att_field_id)
+                    all_content_blocks.extend(await render(tmp_path))
 
                 if all_content_blocks:
                     raw_result = await loop.run_in_executor(
@@ -731,7 +781,7 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                 update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = f"LỖI HĐ: {str(e)[:200]}"
                 result_entry["error"] = str(e)
 
-        elif loai_chung_tu == "Hóa đơn" and not (isinstance(invoice_attachments, list) and len(invoice_attachments) > 0):
+        elif loai_chung_tu == "Hóa đơn" and not invoice_attachments:
             # Marked as Hóa đơn but no file
             update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = "Bỏ qua - không có file hóa đơn"
 
@@ -748,14 +798,11 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
              ("plhđ" in lct_lower or "phụ lục" in lct_lower)),
         ]
 
-        # BƯỚC 1 (BẮT BUỘC): đọc TRANG ĐẦU của cả 3 cột (Hợp đồng / BBNT / Phụ lục)
-        # để lấy đủ mã số (AI_Số_Hợp_đồng, AI_Số_BBNT, AI_Số_PLHĐ) — cột nào có file thì lấy số cột đó.
-        for c_key, contract_att_field, contract_doc_type, so_key, _amt in contract_specs:
-            if not contract_att_field:
-                continue
-            c_atts = fields.get(contract_att_field, [])
-            if not isinstance(c_atts, list) or len(c_atts) == 0:
-                continue
+        async def read_doc_number(c_key, contract_att_field, contract_doc_type, so_key):
+            """Bước 1: đọc TRANG ĐẦU để lấy mã số chứng từ của một cột."""
+            c_atts = _get_attachments(fields, contract_att_field)
+            if not c_atts:
+                return
             print(f"  -> [Bước 1] Đọc số từ {c_key} (trang đầu)...", flush=True)
             try:
                 first_blocks = []
@@ -767,17 +814,10 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                     fname = att.get("name", "file")
                     fnames.append(fname)
                     if not ftok: continue
-                    tmp_path = await loop.run_in_executor(
-                        None, lark.save_attachment_temp,
-                        ftok, fname, app_token, table_id, field_id, record_id
-                    )
-                    try:
-                        first_blocks.extend(FileHandler.process_file(tmp_path, first_page_only=True))
-                    finally:
-                        try: os.unlink(tmp_path)
-                        except: pass
+                    tmp_path = await fetch(ftok, fname, field_id)
+                    first_blocks.extend(await render(tmp_path, first_page_only=True))
                 if not first_blocks:
-                    continue
+                    return
                 num_result = await loop.run_in_executor(
                     None, extractor.extract_doc_numbers, first_blocks, ", ".join(fnames), contract_doc_type
                 )
@@ -788,13 +828,24 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
             except Exception as e:
                 print(f"  -> [Bước 1] Lỗi đọc số {c_key}: {e}", flush=True)
 
+        # BƯỚC 1 (BẮT BUỘC): đọc TRANG ĐẦU của cả 3 cột (Hợp đồng / BBNT / Phụ lục)
+        # để lấy đủ mã số (AI_Số_Hợp_đồng, AI_Số_BBNT, AI_Số_PLHĐ) — cột nào có file thì lấy số cột đó.
+        for c_key, contract_att_field, contract_doc_type, so_key, is_amount_source in contract_specs:
+            if not contract_att_field:
+                continue
+            if is_amount_source:
+                # Cột này được đọc ĐẦY ĐỦ ở bước 2 và số của bước 2 được ưu tiên, nên bước 1
+                # chỉ chạy làm dự phòng khi bước 2 không ra số (tiết kiệm 1 lần gọi model).
+                continue
+            await read_doc_number(c_key, contract_att_field, contract_doc_type, so_key)
+
         # BƯỚC 2: chỉ đọc ĐẦY ĐỦ đúng loại chứng từ đang hiển thị ở cột "Loại chứng từ có chứa giá trị số tiền"
         # để lấy các trường giá trị (Số lần TT, Giá trị TT, Tổng net/gross, VAT, PIT, MST).
         for c_key, contract_att_field, contract_doc_type, so_key, is_amount_source in contract_specs:
             if not is_amount_source or not contract_att_field:
                 continue
-            contract_attachments = fields.get(contract_att_field, [])
-            if not isinstance(contract_attachments, list) or len(contract_attachments) == 0:
+            contract_attachments = _get_attachments(fields, contract_att_field)
+            if not contract_attachments:
                 continue
 
             print(f"  -> [Bước 2] Xử lý chi tiết {c_key}...", flush=True)
@@ -811,16 +862,8 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                     if not file_token: continue
 
                     print(f"  -> Downloading {c_key}: {att_name} ({file_token})", flush=True)
-                    tmp_path = await loop.run_in_executor(
-                        None, lark.save_attachment_temp,
-                        file_token, att_name, app_token, table_id, contract_field_id, record_id
-                    )
-                    try:
-                        content_blocks = FileHandler.process_file(tmp_path)
-                        all_content_blocks.extend(content_blocks)
-                    finally:
-                        try: os.unlink(tmp_path)
-                        except: pass
+                    tmp_path = await fetch(file_token, att_name, contract_field_id)
+                    all_content_blocks.extend(await render(tmp_path))
 
                 if not all_content_blocks:
                     raise Exception(f"Không thể đọc file {c_key} đính kèm")
@@ -898,14 +941,16 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                 result_entry["error"] = str(e)
                 result_entry["trang_thai"] = "LỖI"
 
+            # Dự phòng: bước 2 không ra mã số -> đọc trang đầu như bước 1.
+            so_col = result_fields_config.get(so_key)
+            if so_col and so_col not in update_fields:
+                await read_doc_number(c_key, contract_att_field, contract_doc_type, so_key)
+
         # Skip if no attachment fields have any files
         if not loai_chung_tu and not update_fields:
             all_att_names = []
             for af in [attachment_field, att_field_hop_dong, att_field_bbnt, att_field_phu_luc]:
-                if af and af in fields:
-                    atts = fields.get(af, [])
-                    if isinstance(atts, list) and len(atts) > 0:
-                        all_att_names.extend(atts)
+                all_att_names.extend(_get_attachments(fields, af))
             if not all_att_names:
                 update_fields[result_fields_config.get("co_vat", "AI_Có_VAT")] = "Không có đính kèm"
                 update_fields[result_fields_config.get("trang_thai", "AI_Trạng_Thái")] = "Bỏ qua - không có file"
@@ -928,9 +973,33 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
         if "trang_thai" not in result_entry:
             result_entry["trang_thai"] = update_fields.get(result_fields_config.get("trang_thai", "AI_Trạng_Thái"), "OK")
         tasks[task_id]["results"].append(result_entry)
-        tasks[task_id]["processed"] = i + 1
-        await asyncio.sleep(0.3)
+        tasks[task_id]["processed"] += 1
 
+    # Xử lý nhiều record cùng lúc (có giới hạn) thay vì tuần tự từng record.
+    sem = asyncio.Semaphore(BATCH_CONCURRENCY)
+
+    async def run_one(i: int, record_id: str):
+        downloaded: Dict[str, str] = {}
+        async with sem:
+            try:
+                await process_one(i, record_id, downloaded)
+            except Exception as e:
+                traceback.print_exc()
+                tasks[task_id]["results"].append({"record_id": record_id, "trang_thai": "LỖI", "error": str(e)})
+                tasks[task_id]["processed"] += 1
+            finally:
+                for path in downloaded.values():
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+
+    print(f"  -> Processing {len(record_ids)} record(s), {BATCH_CONCURRENCY} at a time...", flush=True)
+    await asyncio.gather(*(run_one(i, rid) for i, rid in enumerate(record_ids)))
+
+    # Record chạy song song nên xong không theo thứ tự; sắp lại theo thứ tự người dùng đã chọn.
+    order = {rid: i for i, rid in enumerate(record_ids)}
+    tasks[task_id]["results"].sort(key=lambda r: order.get(r.get("record_id"), len(order)))
     tasks[task_id]["status"] = "done"
     tasks[task_id]["current_record"] = ""
     print(f"+++ [DONE] process_lark_batch task_id={task_id} +++", flush=True)
@@ -996,8 +1065,8 @@ async def upload_and_extract(files: List[UploadFile] = File(...)):
             with open(saved_path, "wb") as f:
                 f.write(content)
 
-            content_blocks = FileHandler.process_file(str(saved_path))
-            raw_result = extractor.extract_invoice(content_blocks, filename)
+            content_blocks = await run_in_threadpool(FileHandler.process_file, str(saved_path))
+            raw_result = await run_in_threadpool(extractor.extract_invoice, content_blocks, filename)
             processed = calculator.process(raw_result)
 
             uploaded_files[file_id] = str(saved_path)
@@ -1045,7 +1114,7 @@ async def upload_and_extract(files: List[UploadFile] = File(...)):
 
 
 @app.post("/api/lark/push-upload")
-async def push_upload_results_to_lark(data: dict):
+def push_upload_results_to_lark(data: dict):
     """
     Push extracted upload results to a specified Lark Base table.
     Smart mapping existing columns and gracefully handling field permissions.
@@ -1148,14 +1217,15 @@ async def push_upload_results_to_lark(data: dict):
         col_map["status"] = find_best_column(rf.get("trang_thai", "AI_Trạng_Thái"), ["Trạng thái", "Status"])
 
     # Ensure the "Hóa đơn" column is an Attachment field (type 17).
-    # If it exists as another type (e.g. Text), convert it in place.
+    # Chỉ tự đổi kiểu khi cột đang là Text thuần (type 1). Các kiểu khác — đặc biệt Lookup/Formula/
+    # Link (18-21) — đổi kiểu sẽ xoá cấu hình của cột trên Lark, nên để nguyên.
     file_field_type = None
     if mode == "bill":
         _c_file = col_map.get("file")
         if _c_file and _c_file in existing_names:
             _f = existing_names[_c_file]
             file_field_type = _f.get("type")
-            if file_field_type != 17 and _f.get("field_id"):
+            if file_field_type == 1 and _f.get("field_id"):
                 try:
                     lark.update_field(app_token, table_id, _f["field_id"], _c_file, 17)
                     file_field_type = 17

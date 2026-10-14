@@ -173,16 +173,28 @@ class LarkClient:
     # ========== Fields ==========
 
     def list_fields(self, app_token: str, table_id: str) -> List[dict]:
-        """Lấy danh sách fields (columns) của table."""
+        """Lấy danh sách TẤT CẢ fields (columns) của table.
+        API mặc định chỉ trả 20 field/trang, nên phải phân trang — nếu không, bảng nhiều cột
+        sẽ thiếu field (thường là các cột Lookup thêm sau) trong dropdown và trong map kiểu field."""
         url = f"{self.base_url}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
-        resp = requests.get(url, headers=self._headers(), timeout=LARK_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
+        items: List[dict] = []
+        page_token = None
+        while True:
+            params = {"page_size": 100}
+            if page_token:
+                params["page_token"] = page_token
+            resp = requests.get(url, headers=self._headers(), params=params, timeout=LARK_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
 
-        if data.get("code") != 0:
-            raise Exception(f"Lark list_fields error: {data.get('msg')}")
+            if data.get("code") != 0:
+                raise Exception(f"Lark list_fields error: {data.get('msg')}")
 
-        return data.get("data", {}).get("items", [])
+            page = data.get("data", {})
+            items.extend(page.get("items") or [])
+            page_token = page.get("page_token")
+            if not page.get("has_more") or not page_token:
+                return items
 
     def create_field(self, app_token: str, table_id: str, field_name: str, field_type: int) -> dict:
         """

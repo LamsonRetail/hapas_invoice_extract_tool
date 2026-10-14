@@ -309,17 +309,19 @@ GET /api/lark/status/{task_id}
 **Background task** (`process_lark_batch`):
 1. Load config (API keys, field names)
 2. Fetch `field_id` của cột đính kèm (cần cho download permission)
-3. Lặp qua từng `record_id`:
+3. Xử lý các `record_id` **song song, tối đa `BATCH_CONCURRENCY` (= 3) record cùng lúc** (`asyncio.Semaphore`). Mỗi record:
    - Fetch record
-   - Download tất cả file đính kèm → temp files
+   - Download file đính kèm → temp files (mỗi file chỉ tải **một lần**, bước 1 và bước 2 dùng chung)
    - Gọi FileHandler → content_blocks
    - Gọi AI → raw_result
    - Tính VAT → processed
-   - Ghi kết quả ngược Lark
+   - Ghi kết quả ngược Lark (bỏ qua cột chỉ-đọc: Lookup, Formula, cột hệ thống)
    - Xóa temp files
 4. Set `status = "done"` khi xong
 
-Dùng `asyncio.get_event_loop().run_in_executor(None, ...)` để chạy các tác vụ blocking (requests, file I/O) trong thread pool mà không block event loop.
+Mọi tác vụ blocking (requests, render PDF, gọi AI) đều chạy trong thread pool (`run_in_executor` / `run_in_threadpool`), không block event loop. Các endpoint chỉ gọi Lark đồng bộ được khai báo `def` thường để FastAPI tự đẩy vào thread pool.
+
+**Cột Lookup / Formula:** `records/search` trả giá trị dạng gói `{"type": <kiểu gốc>, "value": [...]}`; `GET /records/{id}` trả file dạng phẳng với key `attachmentToken`. `_get_attachments()` và `_extract_text_field()` xử lý cả hai. File trong cột Lookup tải được nhờ `extra.bitablePerm.attachments` dùng `field_id` của chính cột Lookup. `list_fields` phân trang (API mặc định chỉ trả 20 cột/trang).
 
 ---
 
@@ -490,7 +492,7 @@ Vì bạn muốn chạy nhiều tools trên cùng server, phương án dùng Doc
 |---|---|---|
 | **`KeyError: 'ContainerConfig'`** khi chạy docker-compose up | Do phiên bản `docker-compose` v1.x quá cũ, bị xung đột metadata khi cố khởi tạo lại vùng chứa (recreate) đè lên vùng chứa cũ. | Thêm lệnh `docker-compose down` để xóa dứt điểm container cũ trước khi chạy lại `docker-compose up -d --build`. |
 | **`ModuleNotFoundError: No module named 'requests'`** hoặc `Invalid requirement: 'r\x00e\x00...'` | Thường xảy ra do sửa file `requirements.txt` bằng lệnh `echo` trên PowerShell (Windows). PowerShell tự động lưu dưới dạng UTF-16LE, đẩy lên Linux bị lỗi ký tự null `\x00`. | Mở file `requirements.txt` bằng code editor (như VSCode/Notepad), đảm bảo định dạng file lưu ở dạng **UTF-8** thuần. |
-| **`Error code: 503 ... High demand`** hoặc đứt gãy kết quả JSON | API của Gemini/OpenAI bị quá tải cục bộ, hoặc bị hết tokens giữa chừng khi trả về kết quả JSON dẫn đến cắt ngang chuỗi. | Code đã được vá: (1) Thêm thuật toán thử lại (Exponential backoff retry) tự động đợi 1s, 2s, 4s... nếu gặp mã 503/429. (2) Regex vá lỗi `ai_extractor.py` tự động cắt bỏ phần string JSON bị đứt đoạn cuối cùng. |
+| **`Error code: 503 ... High demand`** hoặc đứt gãy kết quả JSON | API của Gemini/OpenAI bị quá tải cục bộ, hoặc bị hết tokens giữa chừng khi trả về kết quả JSON dẫn đến cắt ngang chuỗi. | Code đã được vá: (1) Một lớp thử lại duy nhất (`_create_with_retry`), phân loại theo kiểu lỗi: 429 đợi 5s→60s (hoặc theo `Retry-After`, hạn mức theo ngày thì báo lỗi ngay), 500/502/503/504 và lỗi kết nối đợi 1s, 2s, 4s…, timeout chỉ thử lại 1 lần; không thử lại lỗi 4xx khác. Client có timeout rõ ràng (connect 15s, read 300s). (2) Regex vá lỗi `ai_extractor.py` tự động cắt bỏ phần string JSON bị đứt đoạn cuối cùng. |
 | Truy cập port 8080 báo `ERR_CONNECTION_REFUSED` | 1. Firewall GCP chặn port.<br>2. Ứng dụng bên trong container bị Crash (chết) ngay sau khi khởi động. | Gõ lệnh `docker logs invoice-extractor` để xem log lỗi Python chi tiết. Nếu do Firewall, vào GCP Network mở cổng TCP 8080. |
 
 ---

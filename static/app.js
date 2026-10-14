@@ -14,7 +14,10 @@ let uploadResults = [];
 let currentSettings = {};
 let uploadCancelled = false;
 let uploadAbortController = null;
-const UPLOAD_THROTTLE_MS = 1500;
+// Số file gửi lên xử lý cùng lúc. Đo thực tế: gateway chịu tốt 3 request song song.
+const UPLOAD_CONCURRENCY = 3;
+let pollInFlight = false;
+let uploadRunning = false;
 
 // Smart filter state
 let larkFilters = {
@@ -158,6 +161,10 @@ function setupUploadZone() {
 }
 
 async function handleFiles(files) {
+    if (uploadRunning) {
+        alert("Đang xử lý lượt trước, vui lòng đợi xong (hoặc bấm Hủy) rồi nạp tiếp.");
+        return;
+    }
     if (!currentSettings.openai_api_key) {
         alert("⚠️ Chưa cấu hình OpenAI API Key. Vui lòng vào tab Cài đặt.");
         switchToTab("settings");
@@ -172,39 +179,62 @@ async function handleFiles(files) {
     $("uploadResultsSection").style.display = "block";
 
     let cancelledEarly = false;
-    for (let i = 0; i < files.length; i++) {
-        if (uploadCancelled) { cancelledEarly = true; break; }
-        $("uploadProgressText").textContent = `Đang xử lý ${i + 1} / ${files.length} file...`;
-        const formData = new FormData();
-        formData.append("files", files[i]);
-
-        uploadAbortController = new AbortController();
-        try {
-            const res = await fetch("/api/upload", { method: "POST", body: formData, signal: uploadAbortController.signal });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || "Lỗi máy chủ (HTTP " + res.status + ")");
-            }
-            const data = await res.json();
-            uploadResults = uploadResults.concat(data.results || []);
-        } catch (e) {
-            // Nếu người dùng chủ động hủy thì không ghi dòng lỗi cho file đang chạy dở
-            if (uploadCancelled && e.name === "AbortError") { cancelledEarly = true; break; }
-            uploadResults.push({
-                filename: files[i].name,
-                error: e.message,
-                trang_thai: "LỖI"
-            });
-        } finally {
-            uploadAbortController = null;
-        }
+    // Kết quả của lượt này giữ theo đúng thứ tự file, dù file nào xử lý xong trước.
+    const previousResults = uploadResults;
+    const slots = new Array(files.length);
+    let nextIndex = 0;
+    let doneCount = 0;
+    const updateProgress = () => {
+        $("uploadProgressText").textContent = `Đang xử lý: xong ${doneCount} / ${files.length} file...`;
+    };
+    const publish = () => {
+        uploadResults = previousResults.concat(...slots.filter(Boolean));
         renderUploadResults();
+    };
 
-        // Giãn nhịp giữa các file để tránh burst đụng giới hạn rate limit (429)
-        if (i < files.length - 1 && !uploadCancelled) {
-            await new Promise((resolve) => setTimeout(resolve, UPLOAD_THROTTLE_MS));
+    // Một AbortController cho cả lượt: bấm Hủy sẽ dừng mọi file đang chạy.
+    uploadAbortController = new AbortController();
+    const signal = uploadAbortController.signal;
+
+    async function worker() {
+        while (nextIndex < files.length) {
+            if (uploadCancelled) { cancelledEarly = true; return; }
+            const i = nextIndex++;
+            const formData = new FormData();
+            formData.append("files", files[i]);
+            try {
+                const res = await fetch("/api/upload", { method: "POST", body: formData, signal });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || "Lỗi máy chủ (HTTP " + res.status + ")");
+                }
+                const data = await res.json();
+                slots[i] = data.results || [];
+            } catch (e) {
+                // Nếu người dùng chủ động hủy thì không ghi dòng lỗi cho file đang chạy dở
+                if (uploadCancelled && e.name === "AbortError") { cancelledEarly = true; return; }
+                slots[i] = [{
+                    filename: files[i].name,
+                    error: e.message,
+                    trang_thai: "LỖI"
+                }];
+            }
+            doneCount++;
+            updateProgress();
+            publish();
         }
     }
+
+    updateProgress();
+    const workerCount = Math.min(UPLOAD_CONCURRENCY, files.length);
+    uploadRunning = true;
+    try {
+        await Promise.all(Array.from({ length: workerCount }, worker));
+    } finally {
+        uploadRunning = false;
+        uploadAbortController = null;
+    }
+    publish();
 
     $("uploadProgressSection").style.display = "none";
     renderUploadResults();
@@ -354,6 +384,10 @@ function setupEventListeners() {
 
     // Upload tab
     $("btnClearUpload").addEventListener("click", () => {
+        if (uploadRunning) {
+            alert("Đang xử lý, chưa thể xóa kết quả.");
+            return;
+        }
         uploadResults = [];
         const statusMsg = $("pushStatusMsg");
         if (statusMsg) statusMsg.textContent = "";
@@ -540,6 +574,8 @@ function showResolvedInfo(appToken, tableId, viewId) {
     $("infoViewId").textContent = viewId || "(default)";
 }
 
+const FIELD_TYPE_LABELS = { 17: "Tệp đính kèm", 19: "Lookup", 20: "Formula" };
+
 async function loadFieldsForSelectors(appToken, tableId, selectedAtt = "", selectedContent = "", selectedHopDong = "", selectedBBNT = "", selectedPhuLuc = "", selectedDocType = "") {
     $("fieldSelectors").style.display = "none";
     try {
@@ -560,7 +596,8 @@ async function loadFieldsForSelectors(appToken, tableId, selectedAtt = "", selec
             if (!sel) return;
             sel.innerHTML = '<option value="">-- Chọn cột --</option>';
             fields.forEach(f => {
-                const opt = new Option(f.name, f.name);
+                const typeLabel = FIELD_TYPE_LABELS[f.type];
+                const opt = new Option(typeLabel ? `${f.name} (${typeLabel})` : f.name, f.name);
                 if (f.name === selected) opt.selected = true;
                 sel.appendChild(opt);
             });
@@ -953,7 +990,8 @@ async function startProcessing() {
 }
 
 async function pollProcessingStatus() {
-    if (!currentTaskId) return;
+    if (!currentTaskId || pollInFlight) return;
+    pollInFlight = true;
     try {
         const res = await fetch(`/api/lark/status/${currentTaskId}`);
         if (!res.ok) {
@@ -979,6 +1017,7 @@ async function pollProcessingStatus() {
             await loadRecords();
         }
     } catch (e) { /* retry */ }
+    finally { pollInFlight = false; }
 }
 
 function showProcessingSummary(results) {
