@@ -170,6 +170,16 @@ class SanitizeFieldsTest(unittest.TestCase):
         self.assertEqual(clean, {"T": "ok"})
         self.assertEqual(sorted(dropped), ["Auto", "F", "L"])
 
+    def test_columns_missing_from_table_are_dropped(self):
+        # Lark từ chối cả request nếu có tên cột không tồn tại (VD cột mới chưa được tạo).
+        clean, dropped = app._sanitize_fields_for_lark({"T": "ok", "New": "x"}, {"T": 1})
+        self.assertEqual(clean, {"T": "ok"})
+        self.assertEqual(dropped, ["New"])
+
+    def test_unknown_table_keeps_everything(self):
+        # Không lấy được danh sách cột (map rỗng) -> không đoán, ghi nguyên.
+        self.assertEqual(app._sanitize_fields_for_lark({"T": "ok"}, {}), ({"T": "ok"}, []))
+
 
 class ListFieldsPaginationTest(unittest.TestCase):
     def test_follows_page_token(self):
@@ -209,15 +219,21 @@ class FakeLark:
         self.temp_paths = []
         self.updates = {}
         self.lock = threading.Lock()
+        self.missing_columns = set()
 
     def list_fields(self, app_token, table_id):
-        return [
+        fields = [
             {"field_name": "Hóa đơn", "field_id": "fldInv", "type": 17},
             {"field_name": LOOKUP_HD, "field_id": "fldHD", "type": 19},
             {"field_name": "BBNT", "field_id": "fldBB", "type": 17},
             {"field_name": "Nội dung", "field_id": "fldND", "type": 20},
             {"field_name": "AI_MST_A", "field_id": "fldMst", "type": 19},
         ]
+        # Bảng đã bấm "Tự động tạo cột": các cột kết quả AI còn lại là Text.
+        taken = {f["field_name"] for f in fields} | self.missing_columns
+        fields += [{"field_name": name, "field_id": f"fldAI{i}", "type": 1}
+                   for i, name in enumerate(app.DEFAULT_RESULT_FIELDS.values()) if name not in taken]
+        return fields
 
     def get_record(self, app_token, table_id, record_id):
         return {"fields": {
@@ -244,6 +260,7 @@ class FakeLark:
 
 class FakeExtractor:
     contract_number = "HD-full"
+    contract_date = "15/03/2026"
 
     def __init__(self, *args, **kwargs):
         self.lock = threading.Lock()
@@ -267,18 +284,21 @@ class FakeExtractor:
 
     def extract_contract(self, blocks, filename="", doc_type=""):
         self._llm("contract")
-        return {"so_hop_dong": self.contract_number}
+        return {"so_hop_dong": self.contract_number, "ngay_hop_dong": self.contract_date}
 
     def extract_doc_numbers(self, blocks, filename="", doc_type=""):
         self._llm("numbers")
-        return {"so_hop_dong": "HD-step1", "so_bbnt": "BB-step1", "so_plhd": None}
+        # Trang đầu BBNT cũng có ngày: không được ghi vào cột ngày hợp đồng.
+        return {"so_hop_dong": "HD-step1", "ngay_hop_dong": "02/02/2026", "so_bbnt": "BB-step1", "so_plhd": None}
 
 
 class BatchProcessingTest(unittest.TestCase):
-    def _run(self, record_ids, contract_number="HD-full"):
+    def _run(self, record_ids, contract_number="HD-full", contract_date="15/03/2026", missing_columns=()):
         lark = FakeLark()
+        lark.missing_columns = set(missing_columns)
         extractor = FakeExtractor()
         extractor.contract_number = contract_number
+        extractor.contract_date = contract_date
         renders = []
 
         def fake_render(path, first_page_only=False):
@@ -342,6 +362,22 @@ class BatchProcessingTest(unittest.TestCase):
         _, lark, _, _, _ = self._run(["recA"])
         self.assertNotIn("AI_MST_A", lark.updates["recA"])  # cột Lookup trong bảng
 
+    def test_contract_date_from_full_read(self):
+        _, lark, _, _, _ = self._run(["recA"])
+        self.assertEqual(lark.updates["recA"]["AI_Ngày_Hợp_đồng"], "15/03/2026")
+
+    def test_contract_date_not_taken_from_other_documents(self):
+        # Hợp đồng không ra ngày; ngày ở trang đầu BBNT không được ghi vào cột ngày hợp đồng.
+        _, lark, _, _, _ = self._run(["recA"], contract_date=None)
+        self.assertNotIn("AI_Ngày_Hợp_đồng", lark.updates["recA"])
+
+    def test_missing_result_column_does_not_block_row(self):
+        # Đã deploy nhưng chưa bấm "Tự động tạo cột": các cột khác vẫn phải được ghi.
+        _, lark, _, _, _ = self._run(["recA"], missing_columns={"AI_Ngày_Hợp_đồng"})
+        update = lark.updates["recA"]
+        self.assertNotIn("AI_Ngày_Hợp_đồng", update)
+        self.assertEqual(update["AI_Số_Hợp_đồng"], "HD-full")
+
     def test_no_attachment_records_are_reported(self):
         lark = FakeLark()
         lark.get_record = lambda *a: {"fields": {"Nội dung": "x", "Hóa đơn": {"type": 17, "value": []}}}
@@ -384,6 +420,11 @@ class ContractOnlyStatusTest(unittest.TestCase):
         update = self._run({"so_hop_dong": None, "so_bbnt": None, "so_plhd": None})
         self.assertEqual(update["AI_Trạng_Thái"], "Không đọc được số chứng từ từ file đính kèm")
 
+    def test_contract_date_from_first_page(self):
+        update = self._run({"so_hop_dong": "008/2026", "ngay_hop_dong": "15/03/2026",
+                            "so_bbnt": None, "so_plhd": None})
+        self.assertEqual(update["AI_Ngày_Hợp_đồng"], "15/03/2026")
+
 
 class RecordsListingTest(unittest.TestCase):
     def test_returns_invoice_date_and_text_money(self):
@@ -422,6 +463,18 @@ class RecordsListingTest(unittest.TestCase):
         self.assertEqual(item["tien_vat"], "1824000")
         self.assertEqual(item["tong_tien"], "24624000")
         self.assertEqual(item["ngay_hoa_don"], "")
+
+    def test_contract_row_shows_contract_date(self):
+        lark = mock.Mock()
+        lark.list_records.return_value = ([{"record_id": "r3", "fields": {
+            "Hóa đơn": [{"file_token": "t", "name": "hd.pdf"}],
+            "AI_Ngày_Hợp_đồng": [{"text": "15/03/2026", "type": "text"}],
+        }}], None, 1)
+        cfg = {"lark_app_token": "app", "lark_table_id": "tbl", "lark_attachment_field": "Hóa đơn"}
+        with mock.patch.object(app, "make_lark_client", return_value=lark), \
+                mock.patch.object(app, "load_config", return_value=cfg):
+            item = app.get_lark_records()["items"][0]
+        self.assertEqual(item["ngay_hoa_don"], "15/03/2026")
 
 
 class PushUploadGuardTest(unittest.TestCase):

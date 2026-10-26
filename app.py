@@ -47,6 +47,7 @@ DEFAULT_RESULT_FIELDS = {
     "mst_b": "AI_MST_B",
     # Hợp đồng / BBNT / Phụ lục hợp đồng
     "so_hop_dong": "AI_Số_Hợp_đồng",
+    "ngay_hop_dong": "AI_Ngày_Hợp_đồng",
     "so_lan_tt": "AI_Số_lần_TT",
     "gia_tri_tt": "AI_Giá_trị_TT",
     "tong_gia_tri_net": "AI_Tổng_giá_trị_net",
@@ -146,10 +147,15 @@ def _sanitize_fields_for_lark(update_fields: dict, field_type_map: dict) -> tupl
     """Ép kiểu các giá trị theo kiểu field thực tế của Lark.
     - Field kiểu Number (type 2): chuyển giá trị về số; nếu không parse được thì bỏ field đó.
     - Field chỉ-đọc (Lookup, Formula, cột hệ thống): bỏ — Lark từ chối ghi và sẽ làm hỏng cả request.
+    - Field chưa có trong bảng (VD: cột mới chưa bấm "Tự động tạo cột"): bỏ, cùng lý do.
+      Chỉ áp dụng khi đã lấy được danh sách cột; map rỗng thì giữ nguyên để không mất dữ liệu.
     Trả về (clean_fields, dropped) với dropped là danh sách field bị bỏ."""
     clean = {}
     dropped = []
     for name, value in update_fields.items():
+        if field_type_map and name not in field_type_map:
+            dropped.append(name)
+            continue
         ftype = field_type_map.get(name)
         if ftype in LARK_READONLY_FIELD_TYPES:
             dropped.append(name)
@@ -451,6 +457,7 @@ def setup_result_columns(data: dict):
             result_fields.get("mst_b", "AI_MST_B"): 1,
             # Hợp đồng / BBNT / Phụ lục fields
             result_fields.get("so_hop_dong", "AI_Số_Hợp_đồng"): 1,
+            result_fields.get("ngay_hop_dong", "AI_Ngày_Hợp_đồng"): 1,
             result_fields.get("so_lan_tt", "AI_Số_lần_TT"): 2,
             result_fields.get("gia_tri_tt", "AI_Giá_trị_TT"): 1,
             result_fields.get("tong_gia_tri_net", "AI_Tổng_giá_trị_net"): 2,
@@ -534,8 +541,8 @@ def get_lark_records(
 
             co_vat = ai("co_vat")
             trang_thai = ai("trang_thai")
-            ngay_hoa_don = ai("ngay_hoa_don")
             # Dòng hóa đơn đọc nhóm cột hóa đơn; dòng hợp đồng/BBNT/phụ lục đọc nhóm cột chứng từ.
+            ngay_hoa_don = ai("ngay_hoa_don") or ai("ngay_hop_dong")
             so_chung_tu = ai("so_hoa_don") or ai("so_hop_dong") or ai("so_plhd") or ai("so_bbnt")
             tien_truoc_thue = ai("tien_truoc_thue") or ai("tong_gia_tri_net") or None
             tien_vat = ai("tien_vat") or ai("vat_chung_tu") or None
@@ -845,6 +852,9 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                 if so_val and result_fields_config.get(so_key):
                     update_fields[result_fields_config[so_key]] = str(so_val)
                     print(f"  -> [Bước 1] {c_key} số = {so_val}", flush=True)
+                ngay_val = num_result.get("ngay_hop_dong")
+                if c_key == "Hợp đồng" and ngay_val and result_fields_config.get("ngay_hop_dong"):
+                    update_fields[result_fields_config["ngay_hop_dong"]] = str(ngay_val)
             except Exception as e:
                 print(f"  -> [Bước 1] Lỗi đọc số {c_key}: {e}", flush=True)
 
@@ -900,6 +910,11 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
                 so_val = contract_result.get(so_key)
                 if so_val and result_fields_config.get(so_key):
                     update_fields[result_fields_config[so_key]] = str(so_val)
+
+                # NGÀY HỢP ĐỒNG: chỉ lấy từ file hợp đồng (BBNT / phụ lục có ngày riêng)
+                ngay_val = contract_result.get("ngay_hop_dong")
+                if c_key == "Hợp đồng" and ngay_val and result_fields_config.get("ngay_hop_dong"):
+                    update_fields[result_fields_config["ngay_hop_dong"]] = str(ngay_val)
 
                 # MST của loại chứng từ chứa giá trị
                 if mst_a and result_fields_config.get("mst_a"):
@@ -994,7 +1009,7 @@ async def process_lark_batch(task_id: str, record_ids: List[str]):
         if update_fields:
             clean_fields, dropped = _sanitize_fields_for_lark(update_fields, field_type_map)
             if dropped:
-                print(f"  -> Dropped non-numeric values for Number fields: {dropped}", flush=True)
+                print(f"  -> Dropped fields (chưa có cột / chỉ-đọc / không ép được số): {dropped}", flush=True)
             try:
                 await loop.run_in_executor(None, lark.update_record, app_token, table_id, record_id, clean_fields)
                 print(f"  -> Record updated OK ({len(clean_fields)} fields).", flush=True)

@@ -492,6 +492,7 @@ function populateSettingsForm(s) {
     $("sColMstA").value = rf.mst_a || "AI_MST_A";
     $("sColMstB").value = rf.mst_b || "AI_MST_B";
     $("sColSoHopDong").value = rf.so_hop_dong || "AI_Số_Hợp_đồng";
+    $("sColNgayHopDong").value = rf.ngay_hop_dong || "AI_Ngày_Hợp_đồng";
     $("sColSoLanTT").value = rf.so_lan_tt || "AI_Số_lần_TT";
     $("sColGiaTriTT").value = rf.gia_tri_tt || "AI_Giá_trị_TT";
     $("sColTongNet").value = rf.tong_gia_tri_net || "AI_Tổng_giá_trị_net";
@@ -526,6 +527,7 @@ function getResultFieldsFromForm() {
         mst_a: $("sColMstA").value || "AI_MST_A",
         mst_b: $("sColMstB").value || "AI_MST_B",
         so_hop_dong: $("sColSoHopDong").value || "AI_Số_Hợp_đồng",
+        ngay_hop_dong: $("sColNgayHopDong").value || "AI_Ngày_Hợp_đồng",
         so_lan_tt: $("sColSoLanTT").value || "AI_Số_lần_TT",
         gia_tri_tt: $("sColGiaTriTT").value || "AI_Giá_trị_TT",
         tong_gia_tri_net: $("sColTongNet").value || "AI_Tổng_giá_trị_net",

@@ -140,6 +140,7 @@ LOẠI CHỨNG TỪ: {doc_type}
 
 QUAN TRỌNG:
 - Số hợp đồng / Số BBNT / Số phụ lục: thường ở đầu tài liệu, dạng "Số: .../..." hoặc "Contract No.: ..."
+- Ngày hợp đồng: ngày ký/lập hợp đồng, thường ở câu "Hôm nay, ngày ... tháng ... năm ..." hoặc dòng "..., ngày ... tháng ... năm ..." ở đầu văn bản. Không lấy ngày hiệu lực, ngày thanh toán hay ngày của văn bản khác được dẫn chiếu.
 - ⚠️ MST A / MST B (TUYỆT ĐỐI KHÔNG ĐƯỢC ĐẢO NGƯỢC):
   + MST A = Mã số thuế của BÊN A = bên cung cấp / bên bán / bên A trong hợp đồng. Tìm trong khối thông tin "BÊN A", mục "Mã số thuế:".
   + MST B = Mã số thuế của BÊN B = bên mua / bên thuê / bên nhận dịch vụ / bên B. Tìm trong khối thông tin "BÊN B", mục "Mã số thuế:".
@@ -154,6 +155,7 @@ QUAN TRỌNG:
 Trả về JSON theo ĐÚNG format sau (không thêm markdown code block):
 {
     "so_hop_dong": "Số hợp đồng. Luôn đọc tất cả nếu có nhiều, và ngăn cách bằng dấu phẩy ',' (ví dụ: 123/HĐ,456/HĐ). null nếu không có",
+    "ngay_hop_dong": "Ngày ký hợp đồng, định dạng DD/MM/YYYY. Nhiều hợp đồng thì ngăn cách bằng ',' theo đúng thứ tự số hợp đồng. null nếu không có hoặc tài liệu không phải hợp đồng",
     "so_bbnt": "Số biên bản nghiệm thu. Luôn đọc tất cả nếu có nhiều, và ngăn cách bằng dấu phẩy ',' (ví dụ: 01/BBNT,02/BBNT). null nếu không có",
     "so_plhd": "Số phụ lục hợp đồng. Luôn đọc tất cả nếu có nhiều, và ngăn cách bằng dấu phẩy ',' (ví dụ: PL01,PL02). null nếu không có",
     "mst_a": "MST bên A / bên cung cấp / bên bán. null nếu không tìm thấy",
@@ -284,6 +286,7 @@ class AIExtractor:
                 "_filename": filename,
                 "_doc_type": doc_type,
                 "so_hop_dong": None,
+                "ngay_hop_dong": None,
                 "so_bbnt": None,
                 "so_plhd": None,
                 "mst_a": None,
@@ -299,15 +302,17 @@ class AIExtractor:
             }
 
     def extract_doc_numbers(self, content_blocks: List[Dict[str, Any]], filename: str = "", doc_type: str = "Hợp đồng") -> Dict[str, Any]:
-        """Bóc NHANH mã số chứng từ từ TRANG ĐẦU (số HĐ / số BBNT / số PLHĐ).
-        Prompt tối giản, chỉ trả về 3 trường số để tiết kiệm token và tránh nhầm lẫn."""
+        """Bóc NHANH mã số chứng từ từ TRANG ĐẦU (số HĐ / số BBNT / số PLHĐ) và ngày ký hợp đồng.
+        Prompt tối giản, chỉ trả về các trường số + ngày để tiết kiệm token và tránh nhầm lẫn."""
         prompt = (
             "Bạn là chuyên gia đọc chứng từ Việt Nam. Đây là TRANG ĐẦU của một tài liệu loại: "
             f"{doc_type}.\n"
-            "Chỉ trích xuất MÃ SỐ / SỐ HIỆU của chứng từ (thường ở đầu tài liệu, dạng 'Số: .../...').\n"
+            "Chỉ trích xuất MÃ SỐ / SỐ HIỆU của chứng từ (thường ở đầu tài liệu, dạng 'Số: .../...') "
+            "và NGÀY KÝ nếu là hợp đồng.\n"
             "Trả về JSON ĐÚNG format sau (không markdown, không giải thích):\n"
             "{\n"
             '  "so_hop_dong": "Số hợp đồng nếu tài liệu là hợp đồng, nhiều số ngăn cách bằng \',\'. null nếu không có",\n'
+            '  "ngay_hop_dong": "Ngày ký hợp đồng (DD/MM/YYYY) nếu tài liệu là hợp đồng, thường ở câu \'Hôm nay, ngày ... tháng ... năm ...\'. Nhiều hợp đồng ngăn cách bằng \',\'. null nếu không có",\n'
             '  "so_bbnt": "Số biên bản nghiệm thu nếu là BBNT, nhiều số ngăn cách bằng \',\'. null nếu không có",\n'
             '  "so_plhd": "Số phụ lục hợp đồng nếu là phụ lục, nhiều số ngăn cách bằng \',\'. null nếu không có"\n'
             "}\n"
@@ -328,7 +333,7 @@ class AIExtractor:
             raw_text = response.choices[0].message.content.strip()
             return self._parse_response(raw_text)
         except Exception as e:
-            return {"error": str(e), "so_hop_dong": None, "so_bbnt": None, "so_plhd": None}
+            return {"error": str(e), "so_hop_dong": None, "ngay_hop_dong": None, "so_bbnt": None, "so_plhd": None}
 
     def _build_messages(self, content_blocks: List[Dict[str, Any]], filename: str) -> list:
         """Xây dựng messages cho API call (dùng EXTRACTION_PROMPT mặc định)."""

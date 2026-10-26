@@ -19,6 +19,7 @@
         "mst_a": "AI_MST_A",
         "mst_b": "AI_MST_B",
         "so_hop_dong": "AI_Số_Hợp_đồng",
+        "ngay_hop_dong": "AI_Ngày_Hợp_đồng",
         "so_lan_tt": "AI_Số_lần_TT",
         "gia_tri_tt": "AI_Giá_trị_TT",
         "tong_gia_tri_net": "AI_Tổng_giá_trị_net",
